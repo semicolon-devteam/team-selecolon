@@ -451,6 +451,16 @@
         let projectsData = [];
         let epicsData = [];
 
+        // 사업 → Epic 매핑 (project-epic-mapping.md 기준)
+        const PROJECT_EPIC_MAPPING = {
+            34: [71, 72, 73, 74, 75], // 정치판
+            33: [91, 92, 93, 94, 95, 96], // 코인톡
+            32: [70, 78, 79, 80, 81, 82, 83, 84, 85, 87, 88, 89, 90], // 랜드
+            185: [62, 63, 64, 65, 66, 67, 127, 128], // 오피스
+            139: [150], // 노조관리
+            14: [150, 99, 100, 129] // 공통 인프라
+        };
+
         // GitHub API 호출 함수
         async function fetchGraphQL(query) {
             const response = await fetch(GRAPHQL_ENDPOINT, {
@@ -544,6 +554,35 @@
             return data.organization.projectV2.items.nodes;
         }
 
+        // Epic 데이터 가져오기 (이슈 번호 배열로)
+        async function fetchEpics(epicNumbers) {
+            if (!epicNumbers || epicNumbers.length === 0) return [];
+
+            const epicQueries = epicNumbers.map((num, idx) => `
+                epic${idx}: repository(owner: "semicolon-devteam", name: "command-center") {
+                    issue(number: ${num}) {
+                        number
+                        title
+                        url
+                        body
+                        state
+                    }
+                }
+            `).join('\n');
+
+            const query = `
+                query {
+                    ${epicQueries}
+                }
+            `;
+
+            const data = await fetchGraphQL(query);
+
+            return Object.values(data)
+                .map(repo => repo.issue)
+                .filter(issue => issue !== null);
+        }
+
         // Epic 데이터 파싱 (Issue body에서 Task list 추출)
         function parseTaskList(body) {
             if (!body) return [];
@@ -575,17 +614,34 @@
             const statsDiv = document.getElementById('stats');
 
             try {
-                contentDiv.innerHTML = '<div class="loading">데이터를 불러오는 중입니다</div>';
+                contentDiv.innerHTML = '<div class="loading">데이터를 불러오는 중입니다...</div>';
 
                 const items = await fetchBusinessProjects();
 
                 // 데이터 파싱
-                projectsData = items.map(item => {
+                projectsData = await Promise.all(items.map(async item => {
                     const content = item.content;
                     if (!content) return null;
 
+                    const projectNumber = content.number;
+                    const epicNumbers = PROJECT_EPIC_MAPPING[projectNumber] || [];
+
+                    // Epic 데이터 로드
+                    let epics = [];
+                    if (epicNumbers.length > 0) {
+                        contentDiv.innerHTML = `<div class="loading">${content.title} Epic 데이터 로드 중...</div>`;
+                        epics = await fetchEpics(epicNumbers);
+                        epics = epics.map(epic => ({
+                            number: epic.number,
+                            title: epic.title,
+                            url: epic.url,
+                            state: epic.state,
+                            tasks: parseTaskList(epic.body)
+                        }));
+                    }
+
                     return {
-                        number: content.number,
+                        number: projectNumber,
                         title: content.title,
                         url: content.url,
                         body: content.body,
@@ -596,9 +652,11 @@
                         budget: getFieldValue(item, '예산'),
                         priority: getFieldValue(item, '중요도'),
                         revenue: getFieldValue(item, '월간 수익'),
-                        tasks: parseTaskList(content.body)
+                        epics: epics
                     };
-                }).filter(p => p !== null);
+                }));
+
+                projectsData = projectsData.filter(p => p !== null);
 
                 // 통계 계산
                 renderStats(projectsData);
@@ -693,7 +751,21 @@
         // 프로젝트 카드 렌더링
         function renderProject(project) {
             const statusClass = getStatusClass(project.status);
-            const progress = calculateProgress(project.tasks);
+
+            // Epic 전체 진행률 계산
+            let totalTasks = 0;
+            let completedTasks = 0;
+
+            if (project.epics && project.epics.length > 0) {
+                project.epics.forEach(epic => {
+                    if (epic.tasks) {
+                        totalTasks += epic.tasks.length;
+                        completedTasks += epic.tasks.filter(t => t.completed).length;
+                    }
+                });
+            }
+
+            const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
             return `
                 <div class="project-group expanded" id="project-${project.number}">
@@ -711,28 +783,62 @@
                                 ${project.budget ? `<span>💰 ₩${(project.budget / 10000).toFixed(0)}만</span>` : ''}
                                 ${project.revenue ? `<span>💵 월 ₩${project.revenue}</span>` : ''}
                                 ${project.category ? `<span>📂 ${project.category}</span>` : ''}
+                                ${project.epics ? `<span>📊 Epic ${project.epics.length}개</span>` : ''}
                             </div>
                         </div>
                     </div>
                     <div class="project-body">
-                        ${renderTasks(project.tasks, progress)}
+                        ${totalTasks > 0 ? `
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${progress}%"></div>
+                            </div>
+                            <div class="progress-text">${progress}% 완료 (${completedTasks}/${totalTasks} Task)</div>
+                        ` : ''}
+                        ${renderEpics(project.epics)}
                     </div>
                 </div>
             `;
         }
 
+        // Epic 리스트 렌더링
+        function renderEpics(epics) {
+            if (!epics || epics.length === 0) {
+                return '<p style="color: #8b949e; padding: 10px 0;">Epic 정보가 없습니다.</p>';
+            }
+
+            return epics.map(epic => {
+                const epicProgress = calculateProgress(epic.tasks);
+                const epicStatusClass = epic.state === 'CLOSED' ? 'status-completed' : 'status-active';
+
+                return `
+                    <div class="epic-group" style="margin: 15px 0; padding: 15px; background: #161b22; border-radius: 6px; border-left: 3px solid #1f6feb;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <div>
+                                <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600;">
+                                    #${epic.number} ${epic.title}
+                                </a>
+                                <span class="project-status ${epicStatusClass}" style="margin-left: 8px;">
+                                    ${epic.state === 'CLOSED' ? '완료' : '진행중'}
+                                </span>
+                            </div>
+                            <div style="color: #8b949e; font-size: 0.9em;">
+                                ${epic.tasks ? `${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} Task` : ''}
+                            </div>
+                        </div>
+                        ${renderTasks(epic.tasks, epicProgress)}
+                    </div>
+                `;
+            }).join('');
+        }
+
         // Task 리스트 렌더링
         function renderTasks(tasks, progress) {
             if (!tasks || tasks.length === 0) {
-                return '<p style="color: #8b949e;">하위 작업 정보가 없습니다.</p>';
+                return '<p style="color: #8b949e; font-size: 0.9em; margin: 5px 0;">Task 정보가 없습니다.</p>';
             }
 
             return `
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: ${progress}%"></div>
-                </div>
-                <div class="progress-text">${progress}% 완료 (${tasks.filter(t => t.completed).length}/${tasks.length})</div>
-                <div class="task-list">
+                <div class="task-list" style="margin-top: 10px;">
                     ${tasks.map(task => `
                         <div class="task-item">
                             <span class="task-checkbox ${task.completed ? 'checked' : ''}"></span>
