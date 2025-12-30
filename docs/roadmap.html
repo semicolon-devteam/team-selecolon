@@ -811,7 +811,7 @@
             const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
             return `
-                <div class="project-group expanded" id="project-${project.number}">
+                <div class="project-group collapsed" id="project-${project.number}">
                     <div class="project-header" onclick="toggleProject(${project.number})">
                         <div>
                             <div class="project-title">
@@ -892,23 +892,26 @@
                                 ${epic.tasks && epic.tasks.length > 0 ? `${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} Task` : 'Task 없음'}
                             </div>
                         </div>
-                        ${renderTasks(epic.tasks, epicProgress)}
+                        ${renderTasks(epic.tasks, epicProgress, epic.number)}
                     </div>
                 `;
             }).join('');
         }
 
-        // Task 리스트 렌더링
-        function renderTasks(tasks, progress) {
+        // Task 리스트 렌더링 (Epic 번호 포함)
+        function renderTasks(tasks, progress, epicNumber = null) {
             if (!tasks || tasks.length === 0) {
                 return '<p style="color: #8b949e; font-size: 0.9em; margin: 5px 0;">Task 정보가 없습니다.</p>';
             }
 
             return `
                 <div class="task-list" style="margin-top: 10px;">
-                    ${tasks.map(task => `
+                    ${tasks.map((task, index) => `
                         <div class="task-item">
-                            <span class="task-checkbox ${task.completed ? 'checked' : ''}"></span>
+                            <span class="task-checkbox ${task.completed ? 'checked' : ''}"
+                                  ${epicNumber ? `onclick="updateTaskCheckbox(${epicNumber}, ${index}, ${!task.completed})" style="cursor: pointer;"` : ''}
+                                  title="${epicNumber ? 'Click to toggle on GitHub' : 'Read-only'}">
+                            </span>
                             <span class="${task.completed ? 'task-completed' : ''}">${task.title}</span>
                             ${task.note ? `<span style="color: #8b949e; font-size: 0.85em;">${task.note}</span>` : ''}
                         </div>
@@ -942,6 +945,84 @@
         function resetToken() {
             localStorage.removeItem('github_token');
             location.reload();
+        }
+
+        // Task 체크박스 업데이트 (GitHub 이슈 수정)
+        async function updateTaskCheckbox(epicNumber, taskIndex, newCheckedState) {
+            if (!GITHUB_TOKEN) {
+                alert('GitHub 토큰이 필요합니다.');
+                return;
+            }
+
+            try {
+                // 1. Epic 이슈 조회
+                const issueResponse = await fetch(`https://api.github.com/repos/semicolon-devteam/command-center/issues/${epicNumber}`, {
+                    headers: {
+                        'Authorization': `Bearer ${GITHUB_TOKEN}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                });
+
+                if (issueResponse.status === 401 || issueResponse.status === 403) {
+                    alert('⚠️ 권한 부족\n\nGitHub 토큰에 write 권한(repo scope)이 없습니다.\n\n해결 방법:\n1. GitHub Settings → Developer settings → Personal access tokens\n2. 토큰 재생성 시 "repo" 권한 체크\n3. 대시보드에서 토큰 재설정');
+                    return;
+                }
+
+                if (!issueResponse.ok) {
+                    throw new Error(`Failed to fetch issue: ${issueResponse.status}`);
+                }
+
+                const issue = await issueResponse.json();
+                let body = issue.body || '';
+
+                // 2. Task list에서 해당 인덱스의 체크박스 상태 변경
+                const taskRegex = /- \[([ x])\] (.+?)(?:\((.+?)\))?$/gm;
+                let currentIndex = 0;
+                let updated = false;
+
+                body = body.replace(taskRegex, (match, checked, title, note) => {
+                    if (currentIndex === taskIndex) {
+                        updated = true;
+                        const newChecked = newCheckedState ? 'x' : ' ';
+                        return `- [${newChecked}] ${title}${note ? `(${note})` : ''}`;
+                    }
+                    currentIndex++;
+                    return match;
+                });
+
+                if (!updated) {
+                    alert('체크박스를 찾을 수 없습니다.');
+                    return;
+                }
+
+                // 3. 이슈 업데이트
+                const updateResponse = await fetch(`https://api.github.com/repos/semicolon-devteam/command-center/issues/${epicNumber}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${GITHUB_TOKEN}`,
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ body })
+                });
+
+                if (updateResponse.status === 401 || updateResponse.status === 403) {
+                    alert('⚠️ 권한 부족\n\nGitHub 토큰에 write 권한(repo scope)이 없습니다.\n\n해결 방법:\n1. GitHub Settings → Developer settings → Personal access tokens\n2. 토큰 재생성 시 "repo" 권한 체크\n3. 대시보드에서 토큰 재설정');
+                    return;
+                }
+
+                if (!updateResponse.ok) {
+                    throw new Error(`Failed to update issue: ${updateResponse.status}`);
+                }
+
+                // 4. 성공 - 데이터 새로고침
+                console.log(`✅ Epic #${epicNumber} Task ${taskIndex} updated`);
+                await loadProjects(); // 전체 새로고침
+
+            } catch (error) {
+                console.error('Task update error:', error);
+                alert(`❌ 업데이트 실패\n\n${error.message}\n\n자세한 내용은 콘솔을 확인하세요.`);
+            }
         }
 
         // 필터 이벤트
