@@ -851,7 +851,31 @@
 
             return epics.map(epic => {
                 const epicProgress = calculateProgress(epic.tasks);
-                const epicStatusClass = epic.state === 'CLOSED' ? 'status-completed' : 'status-active';
+
+                // Epic 상태 판단 (하이브리드)
+                let epicStatus = '';
+                let epicStatusClass = '';
+
+                if (epic.state === 'CLOSED') {
+                    if (epicProgress === 100) {
+                        epicStatus = '완료';
+                        epicStatusClass = 'status-completed';
+                    } else if (epicProgress === 0) {
+                        epicStatus = '닫힘 (Task 없음)';
+                        epicStatusClass = 'status-completed';
+                    } else {
+                        epicStatus = `닫힘 (Task ${epicProgress}%)`;
+                        epicStatusClass = 'status-pending';
+                    }
+                } else {
+                    if (epicProgress === 0) {
+                        epicStatus = '시작 전';
+                        epicStatusClass = 'status-planning';
+                    } else {
+                        epicStatus = `진행중 (${epicProgress}%)`;
+                        epicStatusClass = 'status-active';
+                    }
+                }
 
                 return `
                     <div class="epic-group" style="margin: 15px 0; padding: 15px; background: #161b22; border-radius: 6px; border-left: 3px solid #1f6feb;">
@@ -861,11 +885,11 @@
                                     #${epic.number} ${epic.title}
                                 </a>
                                 <span class="project-status ${epicStatusClass}" style="margin-left: 8px;">
-                                    ${epic.state === 'CLOSED' ? '완료' : '진행중'}
+                                    ${epicStatus}
                                 </span>
                             </div>
                             <div style="color: #8b949e; font-size: 0.9em;">
-                                ${epic.tasks ? `${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} Task` : ''}
+                                ${epic.tasks && epic.tasks.length > 0 ? `${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} Task` : 'Task 없음'}
                             </div>
                         </div>
                         ${renderTasks(epic.tasks, epicProgress)}
