@@ -451,16 +451,6 @@
         let projectsData = [];
         let epicsData = [];
 
-        // 사업 → Epic 매핑 (project-epic-mapping.md 기준)
-        const PROJECT_EPIC_MAPPING = {
-            34: [71, 72, 73, 74, 75], // 정치판
-            33: [91, 92, 93, 94, 95, 96], // 코인톡
-            32: [70, 78, 79, 80, 81, 82, 83, 84, 85, 87, 88, 89, 90], // 랜드
-            185: [62, 63, 64, 65, 66, 67, 127, 128], // 오피스
-            139: [150], // 노조관리
-            14: [150, 99, 100, 129] // 공통 인프라
-        };
-
         // GitHub API 호출 함수
         async function fetchGraphQL(query) {
             const response = await fetch(GRAPHQL_ENDPOINT, {
@@ -654,12 +644,7 @@
                     const projectNumber = content.number;
 
                     // Epic 번호 자동 파싱 (Issue body에서)
-                    let epicNumbers = parseEpicNumbers(content.body);
-
-                    // Fallback: 하드코딩된 매핑 사용
-                    if (epicNumbers.length === 0 && PROJECT_EPIC_MAPPING[projectNumber]) {
-                        epicNumbers = PROJECT_EPIC_MAPPING[projectNumber];
-                    }
+                    const epicNumbers = parseEpicNumbers(content.body);
 
                     // Epic 데이터 로드
                     let epics = [];
