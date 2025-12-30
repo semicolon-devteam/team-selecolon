@@ -583,6 +583,34 @@
                 .filter(issue => issue !== null);
         }
 
+        // Issue body에서 Epic 번호 추출 (자동 파싱)
+        function parseEpicNumbers(body) {
+            if (!body) return [];
+
+            const epicNumbers = new Set();
+
+            // 패턴 1: #71, #72 형식 (같은 레포)
+            const hashPattern = /#(\d+)/g;
+            let match;
+            while ((match = hashPattern.exec(body)) !== null) {
+                epicNumbers.add(parseInt(match[1]));
+            }
+
+            // 패턴 2: semicolon-devteam/command-center#71 형식
+            const repoPattern = /semicolon-devteam\/command-center#(\d+)/g;
+            while ((match = repoPattern.exec(body)) !== null) {
+                epicNumbers.add(parseInt(match[1]));
+            }
+
+            // 패턴 3: GitHub URL 형식
+            const urlPattern = /github\.com\/semicolon-devteam\/command-center\/issues\/(\d+)/g;
+            while ((match = urlPattern.exec(body)) !== null) {
+                epicNumbers.add(parseInt(match[1]));
+            }
+
+            return Array.from(epicNumbers).sort((a, b) => a - b);
+        }
+
         // Epic 데이터 파싱 (Issue body에서 Task list 추출)
         function parseTaskList(body) {
             if (!body) return [];
@@ -624,7 +652,14 @@
                     if (!content) return null;
 
                     const projectNumber = content.number;
-                    const epicNumbers = PROJECT_EPIC_MAPPING[projectNumber] || [];
+
+                    // Epic 번호 자동 파싱 (Issue body에서)
+                    let epicNumbers = parseEpicNumbers(content.body);
+
+                    // Fallback: 하드코딩된 매핑 사용
+                    if (epicNumbers.length === 0 && PROJECT_EPIC_MAPPING[projectNumber]) {
+                        epicNumbers = PROJECT_EPIC_MAPPING[projectNumber];
+                    }
 
                     // Epic 데이터 로드
                     let epics = [];
@@ -709,9 +744,13 @@
         function renderTimeline(projects) {
             // 목표일 기준 그룹핑
             const grouped = {};
+            const noDateProjects = [];
 
             projects.forEach(project => {
-                if (!project.targetDate) return;
+                if (!project.targetDate) {
+                    noDateProjects.push(project);
+                    return;
+                }
 
                 const date = new Date(project.targetDate);
                 const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -722,8 +761,8 @@
                 grouped[monthKey].push(project);
             });
 
-            // 날짜 순 정렬
-            const sortedMonths = Object.keys(grouped).sort();
+            // 날짜 역순 정렬 (최신이 먼저)
+            const sortedMonths = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
 
             let html = '<div class="timeline">';
 
@@ -736,12 +775,31 @@
                         <div class="month-header">${monthName}</div>
                 `;
 
-                grouped[monthKey].forEach(project => {
+                // 월 내에서도 최신순 정렬 (목표일 기준)
+                const monthProjects = grouped[monthKey].sort((a, b) => {
+                    return new Date(b.targetDate) - new Date(a.targetDate);
+                });
+
+                monthProjects.forEach(project => {
                     html += renderProject(project);
                 });
 
                 html += '</div>';
             });
+
+            // 목표일 없는 프로젝트들 (맨 마지막에 표시)
+            if (noDateProjects.length > 0) {
+                html += `
+                    <div class="month-section">
+                        <div class="month-header">목표일 미정</div>
+                `;
+
+                noDateProjects.forEach(project => {
+                    html += renderProject(project);
+                });
+
+                html += '</div>';
+            }
 
             html += '</div>';
 
