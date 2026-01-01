@@ -450,6 +450,7 @@
         // 데이터 저장소
         let projectsData = [];
         let epicsData = [];
+        let expandedProjects = new Set(); // 열린 프로젝트 추적
 
         // GitHub API 호출 함수
         async function fetchGraphQL(query) {
@@ -573,6 +574,34 @@
                 .filter(issue => issue !== null);
         }
 
+        // 서브 이슈 데이터 가져오기
+        async function fetchSubIssues(issueNumbers) {
+            if (!issueNumbers || issueNumbers.length === 0) return [];
+
+            const issueQueries = issueNumbers.map((num, idx) => `
+                issue${idx}: repository(owner: "semicolon-devteam", name: "command-center") {
+                    issue(number: ${num}) {
+                        number
+                        title
+                        url
+                        state
+                    }
+                }
+            `).join('\n');
+
+            const query = `
+                query {
+                    ${issueQueries}
+                }
+            `;
+
+            const data = await fetchGraphQL(query);
+
+            return Object.values(data)
+                .map(repo => repo.issue)
+                .filter(issue => issue !== null);
+        }
+
         // Issue body에서 Epic 번호 추출 (자동 파싱)
         function parseEpicNumbers(body) {
             if (!body) return [];
@@ -601,23 +630,39 @@
             return Array.from(epicNumbers).sort((a, b) => a - b);
         }
 
-        // Epic 데이터 파싱 (Issue body에서 Task list 추출)
+        // Epic 데이터 파싱 (Issue body에서 Task list와 Sub-issue 분리)
         function parseTaskList(body) {
-            if (!body) return [];
+            if (!body) return { tasks: [], subIssues: [] };
 
             const taskRegex = /- \[([ x])\] (.+?)(?:\((.+?)\))?$/gm;
             const tasks = [];
+            const subIssues = [];
             let match;
 
             while ((match = taskRegex.exec(body)) !== null) {
-                tasks.push({
-                    completed: match[1] === 'x',
-                    title: match[2].trim(),
-                    note: match[3] || ''
-                });
+                const completed = match[1] === 'x';
+                const fullText = match[2].trim();
+                const note = match[3] || '';
+
+                // #숫자 패턴 감지 (서브 이슈)
+                const issueMatch = fullText.match(/^#(\d+)\s*(.*)$/);
+                if (issueMatch) {
+                    subIssues.push({
+                        number: parseInt(issueMatch[1]),
+                        title: issueMatch[2].trim() || `Issue #${issueMatch[1]}`,
+                        completed: completed,
+                        note: note
+                    });
+                } else {
+                    tasks.push({
+                        completed: completed,
+                        title: fullText,
+                        note: note
+                    });
+                }
             }
 
-            return tasks;
+            return { tasks, subIssues };
         }
 
         // 필드 값 추출 헬퍼
@@ -651,12 +696,38 @@
                     if (epicNumbers.length > 0) {
                         contentDiv.innerHTML = `<div class="loading">${content.title} Epic 데이터 로드 중...</div>`;
                         epics = await fetchEpics(epicNumbers);
-                        epics = epics.map(epic => ({
-                            number: epic.number,
-                            title: epic.title,
-                            url: epic.url,
-                            state: epic.state,
-                            tasks: parseTaskList(epic.body)
+
+                        // Epic 처리 및 서브 이슈 로드
+                        epics = await Promise.all(epics.map(async epic => {
+                            const parsed = parseTaskList(epic.body);
+
+                            // 서브 이슈 상세 정보 가져오기
+                            let subIssuesData = [];
+                            if (parsed.subIssues.length > 0) {
+                                const subIssueNumbers = parsed.subIssues.map(si => si.number);
+                                const fetchedSubIssues = await fetchSubIssues(subIssueNumbers);
+
+                                subIssuesData = parsed.subIssues.map(si => {
+                                    const fetched = fetchedSubIssues.find(f => f.number === si.number);
+                                    return {
+                                        number: si.number,
+                                        title: fetched ? fetched.title : si.title,
+                                        url: fetched ? fetched.url : `https://github.com/semicolon-devteam/command-center/issues/${si.number}`,
+                                        state: fetched ? fetched.state : 'UNKNOWN',
+                                        completed: si.completed,
+                                        note: si.note
+                                    };
+                                });
+                            }
+
+                            return {
+                                number: epic.number,
+                                title: epic.title,
+                                url: epic.url,
+                                state: epic.state,
+                                tasks: parsed.tasks,
+                                subIssues: subIssuesData
+                            };
                         }));
                     }
 
@@ -805,13 +876,17 @@
                         totalTasks += epic.tasks.length;
                         completedTasks += epic.tasks.filter(t => t.completed).length;
                     }
+                    if (epic.subIssues) {
+                        totalTasks += epic.subIssues.length;
+                        completedTasks += epic.subIssues.filter(si => si.state === 'CLOSED').length;
+                    }
                 });
             }
 
             const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
             return `
-                <div class="project-group collapsed" id="project-${project.number}">
+                <div class="project-group ${ expandedProjects.has(project.number) ? 'expanded' : 'collapsed'}" id="project-${project.number}">
                     <div class="project-header" onclick="toggleProject(${project.number})">
                         <div>
                             <div class="project-title">
@@ -889,16 +964,69 @@
                                 </span>
                             </div>
                             <div style="color: #8b949e; font-size: 0.9em;">
-                                ${epic.tasks && epic.tasks.length > 0 ? `${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} Task` : 'Task 없음'}
+                                ${epic.tasks && epic.tasks.length > 0 ? `${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} Tasks` : ''}
+                                ${epic.subIssues && epic.subIssues.length > 0 ? ` • ${epic.subIssues.filter(si => si.state === 'CLOSED').length}/${epic.subIssues.length} Sub-Issues` : ''}
                             </div>
                         </div>
-                        ${renderTasks(epic.tasks, epicProgress, epic.number)}
+                        ${renderTasksAndSubIssues(epic.tasks, epic.subIssues, epicProgress, epic.number)}
                     </div>
                 `;
             }).join('');
         }
 
-        // Task 리스트 렌더링 (Epic 번호 포함)
+        // Task와 Sub-Issue 분리 렌더링
+        function renderTasksAndSubIssues(tasks, subIssues, progress, epicNumber = null) {
+            let html = '';
+
+            // Tasks 섹션
+            if (tasks && tasks.length > 0) {
+                html += `
+                    <div style="margin-top: 15px;">
+                        <h4 style="color: #8b949e; font-size: 0.95em; margin-bottom: 8px; font-weight: 600;">📋 Tasks</h4>
+                        <div class="task-list">
+                            ${tasks.map((task, index) => `
+                                <div class="task-item">
+                                    <span class="task-checkbox ${task.completed ? 'checked' : ''}"
+                                          ${epicNumber ? `onclick="updateTaskCheckbox(${epicNumber}, ${index}, ${!task.completed})" style="cursor: pointer;"` : ''}
+                                          title="${epicNumber ? 'Click to toggle on GitHub' : 'Read-only'}">
+                                    </span>
+                                    <span class="${task.completed ? 'task-completed' : ''}">${task.title}</span>
+                                    ${task.note ? `<span style="color: #8b949e; font-size: 0.85em;">(${task.note})</span>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Sub-Issues 섹션
+            if (subIssues && subIssues.length > 0) {
+                html += `
+                    <div style="margin-top: 15px;">
+                        <h4 style="color: #8b949e; font-size: 0.95em; margin-bottom: 8px; font-weight: 600;">🔗 Sub-Issues</h4>
+                        <div class="task-list">
+                            ${subIssues.map(si => `
+                                <div class="task-item">
+                                    <span class="task-checkbox ${si.state === 'CLOSED' ? 'checked' : ''}" title="Read-only (from GitHub issue state)"></span>
+                                    <a href="${si.url}" target="_blank" class="task-link ${si.state === 'CLOSED' ? 'task-completed' : ''}" style="color: ${si.state === 'CLOSED' ? '#8b949e' : '#58a6ff'};">
+                                        #${si.number} ${si.title}
+                                    </a>
+                                    ${si.note ? `<span style="color: #8b949e; font-size: 0.85em;">(${si.note})</span>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (!html) {
+                return '<p style="color: #8b949e; font-size: 0.9em; margin: 10px 0;">Task 및 Sub-Issue 정보가 없습니다.</p>';
+            }
+
+            return html;
+        }
+
+        // Task 리스트 렌더링 (Epic 번호 포함) - 하위 호환성 유지
         function renderTasks(tasks, progress, epicNumber = null) {
             if (!tasks || tasks.length === 0) {
                 return '<p style="color: #8b949e; font-size: 0.9em; margin: 5px 0;">Task 정보가 없습니다.</p>';
@@ -940,6 +1068,13 @@
             const element = document.getElementById(`project-${number}`);
             element.classList.toggle('expanded');
             element.classList.toggle('collapsed');
+
+            // 상태 추적
+            if (element.classList.contains('expanded')) {
+                expandedProjects.add(number);
+            } else {
+                expandedProjects.delete(number);
+            }
         }
 
         function resetToken() {
