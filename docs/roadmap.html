@@ -1110,18 +1110,27 @@
                 const issue = await issueResponse.json();
                 let body = issue.body || '';
 
-                // 2. Task list에서 해당 인덱스의 체크박스 상태 변경
+                // 2. Task list에서 해당 인덱스의 체크박스 상태 변경 (Tasks만, Sub-Issues 제외)
                 const taskRegex = /- \[([ x])\] (.+?)(?:\((.+?)\))?$/gm;
                 let currentIndex = 0;
                 let updated = false;
 
                 body = body.replace(taskRegex, (match, checked, title, note) => {
-                    if (currentIndex === taskIndex) {
-                        updated = true;
-                        const newChecked = newCheckedState ? 'x' : ' ';
-                        return `- [${newChecked}] ${title}${note ? `(${note})` : ''}`;
+                    const fullText = title.trim();
+
+                    // Sub-Issue는 건너뛰기 (#숫자 패턴)
+                    const isSubIssue = /^#\d+/.test(fullText);
+
+                    if (!isSubIssue) {
+                        // Task만 카운트
+                        if (currentIndex === taskIndex) {
+                            updated = true;
+                            const newChecked = newCheckedState ? 'x' : ' ';
+                            return `- [${newChecked}] ${title}${note ? `(${note})` : ''}`;
+                        }
+                        currentIndex++;
                     }
-                    currentIndex++;
+
                     return match;
                 });
 
