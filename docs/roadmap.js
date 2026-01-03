@@ -58,7 +58,7 @@
                                     }
                                 }
                             }
-                            items(first: 100) {
+                            items(last: 200) {
                                 nodes {
                                     id
                                     content {
