@@ -196,6 +196,75 @@
             };
         }
 
+        // 이번 달 스프린트들에 할당된 Task들로부터 사업 프로젝트 역산 (주차별)
+        function buildMonthlySprintView(iterationsData, projectsData) {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth();
+
+            // 이번 달에 속한 스프린트들 찾기
+            const monthlySprints = iterationsData.filter(iteration => {
+                const startDate = new Date(iteration.startDate);
+                const endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + iteration.duration);
+
+                // 스프린트가 이번 달과 겹치는지 확인
+                return (startDate.getFullYear() === year && startDate.getMonth() === month) ||
+                       (endDate.getFullYear() === year && endDate.getMonth() === month);
+            }).sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
+
+            if (monthlySprints.length === 0) {
+                return {
+                    month: { year, month },
+                    sprints: []
+                };
+            }
+
+            // Epic 번호 → 사업 프로젝트 매핑 구축
+            const epicToBusinessMap = new Map();
+            projectsData.forEach(project => {
+                if (!project.epics) return;
+                project.epics.forEach(epic => {
+                    epicToBusinessMap.set(epic.number, {
+                        businessProject: project,
+                        epic: epic
+                    });
+                });
+            });
+
+            // 각 스프린트별로 사업 프로젝트 그룹화
+            const sprintViews = monthlySprints.map(sprint => {
+                const businessMap = new Map();
+
+                sprint.epics.forEach(task => {
+                    const epicData = epicToBusinessMap.get(task.number);
+
+                    if (epicData) {
+                        const businessNumber = epicData.businessProject.number;
+
+                        if (!businessMap.has(businessNumber)) {
+                            businessMap.set(businessNumber, {
+                                project: epicData.businessProject,
+                                epics: []
+                            });
+                        }
+
+                        businessMap.get(businessNumber).epics.push(epicData.epic);
+                    }
+                });
+
+                return {
+                    sprint: sprint,
+                    businessProjects: Array.from(businessMap.values())
+                };
+            });
+
+            return {
+                month: { year, month },
+                sprints: sprintViews
+            };
+        }
+
         // 사업관리 프로젝트 데이터 가져오기
         async function fetchBusinessProjects() {
             const query = `
@@ -981,76 +1050,101 @@
                 weekStart.setDate(weekStart.getDate() + 7);
             }
 
-            const currentWeek = weeks.findIndex(w => now >= w.start && now <= w.end);
+            const monthlyData = buildMonthlySprintView(iterationsData, projects);
 
-            let html = `<div class="month-view"><h2 style="margin-bottom: 20px; color: #58a6ff;">${year}년 ${month + 1}월 - 주간 활동 현황</h2>`;
+            if (monthlyData.sprints.length === 0) {
+                document.getElementById('content').innerHTML = `
+                    <div class="month-view">
+                        <h2 style="margin-bottom: 20px; color: #58a6ff;">${year}년 ${month + 1}월 업무</h2>
+                        <div style="text-align: center; padding: 60px 20px; color: #8b949e;">
+                            <p style="font-size: 1.2em; margin-bottom: 10px;">이번 달 스프린트가 없습니다</p>
+                            <p style="font-size: 0.9em;">스프린트를 설정하면 월간 업무가 표시됩니다</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
 
-            weeks.forEach((week, weekIndex) => {
-                const isCurrent = weekIndex === currentWeek;
+            let html = `
+                <div class="month-view">
+                    <h2 style="margin-bottom: 20px; color: #58a6ff;">📆 ${year}년 ${month + 1}월 - 주차별 업무</h2>
+                    <div style="background: #161b22; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                        <div style="color: #8b949e; font-size: 0.95em;">
+                            이번 달 스프린트: ${monthlyData.sprints.length}개
+                            ${monthlyData.sprints.reduce((sum, s) => sum + s.businessProjects.length, 0) > 0 ?
+                                `• 활동 중인 사업: ${new Set(monthlyData.sprints.flatMap(s => s.businessProjects.map(bp => bp.project.number))).size}개` : ''}
+                        </div>
+                    </div>
+            `;
 
-                // 해당 주에 업데이트된 Epic 찾기
-                const weekActivities = [];
-                projects.forEach(p => {
-                    if (!p.epics) return;
+            // 각 스프린트(주차)별로 렌더링
+            monthlyData.sprints.forEach((sprintView, index) => {
+                const sprint = sprintView.sprint;
+                const startDate = new Date(sprint.startDate);
+                const endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + sprint.duration - 1);
 
-                    p.epics.forEach(epic => {
-                        if (!epic.updatedAt) return;
+                const isCurrentSprint = now >= startDate && now <= endDate;
+                const weekClass = isCurrentSprint ? 'week-section current-week' : 'week-section';
 
-                        const epicDate = new Date(epic.updatedAt);
-                        if (epicDate >= week.start && epicDate <= week.end) {
-                            weekActivities.push({
-                                project: p,
-                                epic: epic,
-                                updatedAt: epic.updatedAt
-                            });
-                        }
-                    });
-                });
-
-                if (weekActivities.length === 0 && !isCurrent) return;
-
-                const weekClass = isCurrent ? 'week-section current-week' : 'week-section';
                 html += `
                     <div class="${weekClass}">
                         <div class="week-header">
-                            <span>Week ${weekIndex + 1} (${week.start.getMonth() + 1}/${week.start.getDate()} - ${week.end.getMonth() + 1}/${week.end.getDate()})
-                                ${isCurrent ? '<span style="background: #1f6feb; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">이번 주</span>' : ''}
+                            <div>
+                                <span style="font-weight: 600;">${sprint.title}</span>
+                                <span style="margin-left: 10px; color: #8b949e; font-size: 0.9em;">
+                                    ${startDate.getMonth() + 1}/${startDate.getDate()} - ${endDate.getMonth() + 1}/${endDate.getDate()}
+                                </span>
+                                ${isCurrentSprint ? '<span style="background: #1f6feb; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">이번 주</span>' : ''}
+                            </div>
+                            <span style="font-size: 0.85em; color: #8b949e;">
+                                사업 ${sprintView.businessProjects.length}개 • Epic ${sprint.epics.length}개
                             </span>
-                            <span style="font-size: 0.8em; color: #8b949e;">활동 ${weekActivities.length}건</span>
                         </div>
                 `;
 
-                if (weekActivities.length > 0) {
-                    weekActivities.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-
-                    weekActivities.forEach(activity => {
-                        const progress = calculateEpicProgress(activity.epic);
-                        const updateDate = new Date(activity.updatedAt);
+                // 사업 프로젝트별로 렌더링
+                if (sprintView.businessProjects.length === 0) {
+                    html += '<p style="color: #8b949e; font-size: 0.9em; margin: 10px 0;">할당된 Epic이 없습니다.</p>';
+                } else {
+                    sprintView.businessProjects.forEach(({ project, epics }) => {
+                        const projectProgress = calculateProjectProgress(project);
 
                         html += `
-                            <div class="activity-item">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <div>
-                                        <a href="${activity.project.url}" target="_blank" style="color: #c9d1d9; text-decoration: none; font-weight: 600;">
-                                            ${activity.project.title}
-                                        </a>
-                                        <span style="color: #8b949e; margin: 0 8px;">›</span>
-                                        <a href="${activity.epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none;">
-                                            Epic #${activity.epic.number}: ${activity.epic.title}
-                                        </a>
-                                    </div>
-                                    <span class="activity-time">${updateDate.getMonth() + 1}/${updateDate.getDate()} ${updateDate.getHours()}:${String(updateDate.getMinutes()).padStart(2, '0')}</span>
+                            <div style="background: #0d1117; border-radius: 6px; padding: 12px; margin: 10px 0; border-left: 3px solid #1f6feb;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                    <a href="${project.url}" target="_blank" style="color: #c9d1d9; text-decoration: none; font-weight: 600; font-size: 1.05em;">
+                                        ${project.title}
+                                    </a>
+                                    <span style="color: #58a6ff; font-size: 0.9em;">${projectProgress}%</span>
                                 </div>
-                                <div style="margin-top: 8px; font-size: 0.9em; color: #8b949e;">
-                                    진행률: ${progress}%
-                                    ${activity.epic.tasks && activity.epic.tasks.length > 0 ? `• ${activity.epic.tasks.filter(t => t.completed).length}/${activity.epic.tasks.length} Tasks` : ''}
-                                    ${activity.epic.subIssues && activity.epic.subIssues.length > 0 ? `• ${activity.epic.subIssues.filter(si => si.state === 'CLOSED').length}/${activity.epic.subIssues.length} Sub-Issues` : ''}
-                                </div>
-                            </div>
                         `;
+
+                        // Epic 목록
+                        epics.forEach(epic => {
+                            const progress = calculateEpicProgress(epic);
+                            const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
+
+                            html += `
+                                <div style="padding: 8px; background: #161b22; border-radius: 4px; margin-top: 8px; border-left: 2px solid ${stateColor};">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-size: 0.95em;">
+                                            Epic #${epic.number}: ${epic.title}
+                                        </a>
+                                        <span style="color: #8b949e; font-size: 0.85em;">${progress}%</span>
+                                    </div>
+                                    ${epic.tasks && epic.tasks.length > 0 ? `
+                                        <div style="margin-top: 6px; font-size: 0.85em; color: #8b949e;">
+                                            Tasks: ${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length}
+                                            ${epic.subIssues && epic.subIssues.length > 0 ? `• Sub-Issues: ${epic.subIssues.filter(si => si.state === 'CLOSED').length}/${epic.subIssues.length}` : ''}
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            `;
+                        });
+
+                        html += '</div>';
                     });
-                } else {
-                    html += '<p style="color: #8b949e; font-size: 0.9em; margin: 10px 0;">활동 내역이 없습니다.</p>';
                 }
 
                 html += '</div>';
