@@ -64,6 +64,15 @@
                                     content {
                                         ... on Issue {
                                             number
+                                            title
+                                            url
+                                            state
+                                            body
+                                            labels(first: 10) {
+                                                nodes {
+                                                    name
+                                                }
+                                            }
                                             repository {
                                                 name
                                             }
@@ -99,13 +108,18 @@
                 });
             });
 
-            // 이슈들을 이터레이션에 할당
+            // 이슈들을 이터레이션에 할당 (전체 이슈 정보 포함)
             project.items.nodes.forEach(item => {
                 if (item.content?.repository?.name === 'command-center' && item.fieldValueByName?.iterationId) {
                     const iterationId = item.fieldValueByName.iterationId;
                     if (iterationMap.has(iterationId)) {
                         iterationMap.get(iterationId).epics.push({
                             number: item.content.number,
+                            title: item.content.title,
+                            url: item.content.url,
+                            state: item.content.state,
+                            body: item.content.body,
+                            labels: item.content.labels?.nodes?.map(l => l.name) || [],
                             iterationTitle: item.fieldValueByName.title
                         });
                     }
@@ -113,6 +127,73 @@
             });
 
             return Array.from(iterationMap.values());
+        }
+
+        // 이번주 스프린트에 할당된 Task들로부터 사업 프로젝트 역산
+        function buildWeeklySprintView(iterationsData, projectsData) {
+            const now = new Date();
+
+            // 이번주 스프린트 찾기
+            const currentSprint = iterationsData.find(iteration => {
+                const startDate = new Date(iteration.startDate);
+                const endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + iteration.duration);
+                return now >= startDate && now <= endDate;
+            });
+
+            if (!currentSprint) {
+                return {
+                    sprint: null,
+                    businessProjects: []
+                };
+            }
+
+            // 이번주 스프린트의 Task(Epic) 목록
+            const weeklyTasks = currentSprint.epics;
+
+            // Epic 번호 → 사업 프로젝트 매핑 구축
+            const epicToBusinessMap = new Map();
+            projectsData.forEach(project => {
+                if (!project.epics) return;
+                project.epics.forEach(epic => {
+                    epicToBusinessMap.set(epic.number, {
+                        businessProject: project,
+                        epic: epic
+                    });
+                });
+            });
+
+            // 사업 프로젝트별로 이번주 할당된 Epic들 그룹화
+            const businessMap = new Map();
+
+            weeklyTasks.forEach(task => {
+                const epicData = epicToBusinessMap.get(task.number);
+
+                if (epicData) {
+                    const businessNumber = epicData.businessProject.number;
+
+                    if (!businessMap.has(businessNumber)) {
+                        businessMap.set(businessNumber, {
+                            project: epicData.businessProject,
+                            weeklyEpics: []
+                        });
+                    }
+
+                    businessMap.get(businessNumber).weeklyEpics.push({
+                        ...epicData.epic,
+                        sprintInfo: {
+                            title: currentSprint.title,
+                            startDate: currentSprint.startDate,
+                            duration: currentSprint.duration
+                        }
+                    });
+                }
+            });
+
+            return {
+                sprint: currentSprint,
+                businessProjects: Array.from(businessMap.values())
+            };
         }
 
         // 사업관리 프로젝트 데이터 가져오기
@@ -979,179 +1060,125 @@
             document.getElementById('content').innerHTML = html;
         }
 
-        // Sprint 뷰 렌더링 (이터레이션 기준 - 역산 방식)
+        // Sprint 뷰 렌더링 (주간 Bottom-Up 방식: 이번주 Task → Epic → 사업)
         function renderSprintView(projects) {
-            const now = new Date();
+            const weeklyData = buildWeeklySprintView(iterationsData, projects);
 
-            // 모든 Epic을 번호로 검색할 수 있도록 맵 생성
-            const epicMap = new Map();
-            projects.forEach(p => {
-                if (!p.epics) return;
-                p.epics.forEach(epic => {
-                    epicMap.set(epic.number, { project: p, epic: epic });
-                });
-            });
+            if (!weeklyData.sprint) {
+                document.getElementById('content').innerHTML = `
+                    <div class="sprint-view">
+                        <h2 style="margin-bottom: 20px; color: #58a6ff;">이번주 Sprint 업무</h2>
+                        <div style="text-align: center; padding: 60px 20px; color: #8b949e;">
+                            <p style="font-size: 1.2em; margin-bottom: 10px;">진행 중인 스프린트가 없습니다</p>
+                            <p style="font-size: 0.9em;">스프린트가 시작되면 이번주 업무가 표시됩니다</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
 
-            // iterationsData를 기반으로 스프린트별 Epic 매핑
-            const sortedSprints = iterationsData
-                .map(iteration => {
-                    const sprintEpics = [];
+            const sprint = weeklyData.sprint;
+            const startDate = new Date(sprint.startDate);
+            const endDate = new Date(startDate);
+            endDate.setDate(endDate.getDate() + sprint.duration);
 
-                    // 이 스프린트에 할당된 Epic 번호들로 실제 Epic 데이터 찾기
-                    iteration.epics.forEach(epicRef => {
-                        const epicData = epicMap.get(epicRef.number);
-                        if (epicData) {
-                            sprintEpics.push(epicData);
-                        }
-                    });
-
-                    return {
-                        ...iteration,
-                        assignedEpics: sprintEpics
-                    };
-                })
-                .sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
-
-            // 스프린트에 할당되지 않은 Epic 찾기
-            const assignedEpicNumbers = new Set();
-            iterationsData.forEach(iter => {
-                iter.epics.forEach(epicRef => assignedEpicNumbers.add(epicRef.number));
-            });
-
-            const noSprintEpics = [];
-            epicMap.forEach(({ project, epic }) => {
-                if (!assignedEpicNumbers.has(epic.number)) {
-                    noSprintEpics.push({ project, epic });
-                }
-            });
-
-            let html = `<div class="sprint-view"><h2 style="margin-bottom: 20px; color: #58a6ff;">Sprint 기준 로드맵</h2>`;
-
-            // 현재 진행 중인 Sprint 찾기
-            const currentSprint = sortedSprints.find(sprint => {
-                const startDate = new Date(sprint.startDate);
-                const endDate = new Date(startDate);
-                endDate.setDate(endDate.getDate() + sprint.duration);
-                return now >= startDate && now <= endDate;
-            });
-
-            // Sprint별로 렌더링
-            sortedSprints.forEach(sprint => {
-                const startDate = new Date(sprint.startDate);
-                const endDate = new Date(startDate);
-                endDate.setDate(endDate.getDate() + sprint.duration);
-                const isCurrent = sprint === currentSprint;
-
-                const sprintClass = isCurrent ? 'sprint-section current-sprint' : 'sprint-section';
-
-                html += `
-                    <div class="${sprintClass}">
-                        <div class="sprint-header">
+            let html = `
+                <div class="sprint-view">
+                    <h2 style="margin-bottom: 20px; color: #58a6ff;">🏃 이번주 Sprint 업무</h2>
+                    <div style="background: #0d1721; border: 2px solid #58a6ff; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
-                                <span style="font-weight: 600; font-size: 1.1em;">${sprint.title}</span>
-                                ${isCurrent ? '<span style="background: #1f6feb; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">현재 Sprint</span>' : ''}
+                                <span style="font-size: 1.2em; font-weight: 600; color: #79c0ff;">${sprint.title}</span>
+                                <span style="background: #1f6feb; padding: 3px 10px; border-radius: 4px; font-size: 0.85em; margin-left: 10px;">진행중</span>
                             </div>
-                            <span style="font-size: 0.9em; color: #8b949e;">
+                            <span style="font-size: 0.95em; color: #8b949e;">
                                 ${startDate.getMonth() + 1}/${startDate.getDate()} - ${endDate.getMonth() + 1}/${endDate.getDate()}
-                                (${sprint.duration}일) • ${sprint.assignedEpics.length}개 Epic
+                                (${sprint.duration}일간)
                             </span>
                         </div>
-                `;
-
-                // Sprint 내 Epic들 렌더링
-                sprint.assignedEpics.forEach(({ project, epic }) => {
-                    const progress = calculateEpicProgress(epic);
-                    const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
-
-                    html += `
-                        <div class="epic-item" style="margin: 12px 0; padding: 12px; background: #0d1117; border-radius: 6px; border-left: 3px solid ${stateColor};">
-                            <div style="display: flex; justify-content: space-between; align-items: start;">
-                                <div style="flex: 1;">
-                                    <div style="margin-bottom: 8px;">
-                                        <a href="${project.url}" target="_blank" style="color: #8b949e; text-decoration: none; font-size: 0.9em;">
-                                            ${project.title}
-                                        </a>
-                                    </div>
-                                    <div>
-                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600;">
-                                            Epic #${epic.number}: ${epic.title}
-                                        </a>
-                                        <span style="margin-left: 8px; padding: 2px 6px; background: ${stateColor}; border-radius: 12px; font-size: 0.75em; color: #0d1117;">
-                                            ${epic.state}
-                                        </span>
-                                    </div>
-                                </div>
-                                <div style="text-align: right; min-width: 80px;">
-                                    <div style="font-size: 1.2em; font-weight: 600; color: #58a6ff;">${progress}%</div>
-                                    <div style="font-size: 0.8em; color: #8b949e;">진행률</div>
-                                </div>
-                            </div>
-
-                            ${epic.tasks && epic.tasks.length > 0 ? `
-                                <div style="margin-top: 12px; font-size: 0.9em;">
-                                    <div style="color: #8b949e; margin-bottom: 4px;">
-                                        Tasks: ${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length}
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${progress}%;"></div>
-                                    </div>
-                                </div>
-                            ` : ''}
-
-                            ${epic.subIssues && epic.subIssues.length > 0 ? `
-                                <div style="margin-top: 8px; font-size: 0.85em; color: #8b949e;">
-                                    Sub-Issues: ${epic.subIssues.filter(si => si.state === 'CLOSED').length}/${epic.subIssues.length} 완료
-                                </div>
-                            ` : ''}
+                        <div style="margin-top: 12px; color: #8b949e; font-size: 0.9em;">
+                            이번주 할당된 Epic: ${sprint.epics.length}개
+                            ${weeklyData.businessProjects.length > 0 ? `• 관련 사업: ${weeklyData.businessProjects.length}개` : ''}
                         </div>
-                    `;
-                });
+                    </div>
+            `;
 
-                html += '</div>';
-            });
-
-            // Sprint 미할당 Epic들
-            if (noSprintEpics.length > 0) {
+            // 사업 프로젝트별로 렌더링 (Bottom-Up 역산 결과)
+            if (weeklyData.businessProjects.length === 0) {
                 html += `
-                    <div class="sprint-section" style="border-left-color: #8b949e;">
-                        <div class="sprint-header">
-                            <span style="font-weight: 600; font-size: 1.1em; color: #8b949e;">Sprint 미할당</span>
-                            <span style="font-size: 0.9em; color: #8b949e;">${noSprintEpics.length}개 Epic</span>
-                        </div>
+                    <div style="text-align: center; padding: 40px 20px; color: #8b949e;">
+                        <p style="font-size: 1.1em;">이번주 스프린트에 할당된 Epic이 사업 프로젝트와 연결되지 않았습니다</p>
+                        <p style="font-size: 0.9em; margin-top: 10px;">Epic을 사업 이슈에 연결하면 여기에 표시됩니다</p>
+                    </div>
                 `;
-
-                noSprintEpics.forEach(({ project, epic }) => {
-                    const progress = calculateEpicProgress(epic);
-                    const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
+            } else {
+                weeklyData.businessProjects.forEach(({ project, weeklyEpics }) => {
+                    const projectProgress = calculateProjectProgress(project);
 
                     html += `
-                        <div class="epic-item" style="margin: 12px 0; padding: 12px; background: #0d1117; border-radius: 6px; border-left: 3px solid ${stateColor};">
-                            <div style="display: flex; justify-content: space-between; align-items: start;">
+                        <div class="business-section" style="background: #161b22; border-radius: 8px; padding: 20px; margin-bottom: 20px; border-left: 4px solid #1f6feb;">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px;">
                                 <div style="flex: 1;">
-                                    <div style="margin-bottom: 8px;">
-                                        <a href="${project.url}" target="_blank" style="color: #8b949e; text-decoration: none; font-size: 0.9em;">
+                                    <h3 style="margin: 0 0 8px 0;">
+                                        <a href="${project.url}" target="_blank" style="color: #c9d1d9; text-decoration: none; font-size: 1.2em;">
                                             ${project.title}
                                         </a>
+                                    </h3>
+                                    <div style="color: #8b949e; font-size: 0.9em;">
+                                        이번주 할당: ${weeklyEpics.length}개 Epic
+                                        ${project.status ? `• 상태: ${project.status}` : ''}
                                     </div>
-                                    <div>
-                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600;">
+                                </div>
+                                <div style="text-align: right; min-width: 100px;">
+                                    <div style="font-size: 1.4em; font-weight: 600; color: #58a6ff;">${projectProgress}%</div>
+                                    <div style="font-size: 0.85em; color: #8b949e;">전체 진행률</div>
+                                </div>
+                            </div>
+                    `;
+
+                    // 사업 프로젝트 내 이번주 Epic들 렌더링
+                    weeklyEpics.forEach(epic => {
+                        const progress = calculateEpicProgress(epic);
+                        const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
+
+                        html += `
+                            <div class="epic-item" style="margin: 12px 0; padding: 15px; background: #0d1117; border-radius: 6px; border-left: 3px solid ${stateColor};">
+                                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px;">
+                                    <div style="flex: 1;">
+                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600; font-size: 1.05em;">
                                             Epic #${epic.number}: ${epic.title}
                                         </a>
-                                        <span style="margin-left: 8px; padding: 2px 6px; background: ${stateColor}; border-radius: 12px; font-size: 0.75em; color: #0d1117;">
+                                        <span style="margin-left: 8px; padding: 2px 8px; background: ${stateColor}; border-radius: 12px; font-size: 0.75em; color: #0d1117;">
                                             ${epic.state}
                                         </span>
                                     </div>
+                                    <div style="text-align: right; min-width: 70px;">
+                                        <div style="font-size: 1.1em; font-weight: 600; color: #58a6ff;">${progress}%</div>
+                                    </div>
                                 </div>
-                                <div style="text-align: right; min-width: 80px;">
-                                    <div style="font-size: 1.2em; font-weight: 600; color: #58a6ff;">${progress}%</div>
-                                    <div style="font-size: 0.8em; color: #8b949e;">진행률</div>
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                });
 
-                html += '</div>';
+                                ${epic.tasks && epic.tasks.length > 0 ? `
+                                    <div style="margin-bottom: 10px;">
+                                        <div style="color: #8b949e; font-size: 0.9em; margin-bottom: 6px;">
+                                            Tasks: ${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length} 완료
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" style="width: ${progress}%;"></div>
+                                        </div>
+                                    </div>
+                                ` : ''}
+
+                                ${epic.subIssues && epic.subIssues.length > 0 ? `
+                                    <div style="color: #8b949e; font-size: 0.85em;">
+                                        Sub-Issues: ${epic.subIssues.filter(si => si.state === 'CLOSED').length}/${epic.subIssues.length} 완료
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    });
+
+                    html += '</div>';
+                });
             }
 
             html += '</div>';
