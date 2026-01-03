@@ -672,67 +672,129 @@
 
         // 타임라인 렌더링
         function renderTimeline(projects) {
-            // 목표일 기준 그룹핑
-            const grouped = {};
-            const noDateProjects = [];
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth();
 
-            projects.forEach(project => {
-                if (!project.targetDate) {
-                    noDateProjects.push(project);
-                    return;
+            // 3개월 타임라인 (지난달, 이번달, 다음달)
+            const startMonth = new Date(currentYear, currentMonth - 1, 1);
+            const months = [];
+            for (let i = 0; i < 6; i++) {
+                const monthDate = new Date(currentYear, currentMonth - 1 + i, 1);
+                months.push({
+                    date: monthDate,
+                    year: monthDate.getFullYear(),
+                    month: monthDate.getMonth(),
+                    label: `${monthDate.getFullYear()}년 ${monthDate.getMonth() + 1}월`
+                });
+            }
+
+            // 목표일이 있는 프로젝트만 필터링 및 상태별 그룹화
+            const projectsWithDate = projects.filter(p => p.targetDate);
+            const groupedByStatus = {};
+
+            projectsWithDate.forEach(project => {
+                const status = project.status || '상태 없음';
+                if (!groupedByStatus[status]) {
+                    groupedByStatus[status] = [];
                 }
-
-                const date = new Date(project.targetDate);
-                const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
-                if (!grouped[monthKey]) {
-                    grouped[monthKey] = [];
-                }
-                grouped[monthKey].push(project);
+                groupedByStatus[status].push(project);
             });
 
-            // 날짜 역순 정렬 (최신이 먼저)
-            const sortedMonths = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+            let html = `
+                <div class="gantt-timeline">
+                    <h2 style="margin-bottom: 20px; color: #58a6ff;">📅 로드맵 타임라인</h2>
 
-            let html = '<div class="timeline">';
+                    <!-- 타임라인 헤더 -->
+                    <div class="timeline-header" style="display: grid; grid-template-columns: 200px repeat(${months.length}, 1fr); gap: 0; margin-bottom: 10px; position: sticky; top: 0; background: #0d1117; z-index: 10; padding: 10px 0;">
+                        <div style="font-weight: 600; color: #8b949e; padding: 10px;">프로젝트</div>
+                        ${months.map((m, idx) => {
+                            const isCurrent = m.year === currentYear && m.month === currentMonth;
+                            return `
+                                <div style="text-align: center; padding: 10px; font-weight: 600; color: ${isCurrent ? '#58a6ff' : '#8b949e'}; border-left: 1px solid #21262d;">
+                                    ${m.year.toString().slice(2)}.${(m.month + 1).toString().padStart(2, '0')}
+                                    ${isCurrent ? '<div style="font-size: 0.7em; color: #1f6feb;">▼ 현재</div>' : ''}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
 
-            sortedMonths.forEach(monthKey => {
-                const [year, month] = monthKey.split('-');
-                const monthName = `${year}년 ${parseInt(month)}월`;
+                    <!-- 상태별 섹션 -->
+            `;
+
+            Object.keys(groupedByStatus).sort().forEach(status => {
+                const statusProjects = groupedByStatus[status];
+                const statusClass = getStatusClass(status);
 
                 html += `
-                    <div class="month-section">
-                        <div class="month-header">${monthName}</div>
+                    <div class="timeline-group" style="margin-bottom: 30px;">
+                        <div style="font-weight: 600; color: #c9d1d9; margin-bottom: 10px; padding: 8px; background: #161b22; border-radius: 6px;">
+                            <span class="project-status ${statusClass}">${status}</span>
+                            <span style="margin-left: 10px; font-size: 0.9em; color: #8b949e;">${statusProjects.length}개 프로젝트</span>
+                        </div>
                 `;
 
-                // 월 내에서도 최신순 정렬 (목표일 기준)
-                const monthProjects = grouped[monthKey].sort((a, b) => {
-                    return new Date(b.targetDate) - new Date(a.targetDate);
-                });
+                statusProjects.forEach(project => {
+                    const targetDate = new Date(project.targetDate);
+                    const progress = calculateProjectProgress(project);
 
-                monthProjects.forEach(project => {
-                    html += renderProject(project);
+                    // 타임라인 바 위치 계산
+                    const monthIndex = months.findIndex(m =>
+                        m.year === targetDate.getFullYear() && m.month === targetDate.getMonth()
+                    );
+
+                    html += `
+                        <div class="timeline-row" style="display: grid; grid-template-columns: 200px repeat(${months.length}, 1fr); gap: 0; border-bottom: 1px solid #21262d; padding: 8px 0;">
+                            <div style="padding: 8px; display: flex; align-items: center;">
+                                <a href="${project.url}" target="_blank" style="color: #c9d1d9; text-decoration: none; font-size: 0.95em;">
+                                    ${project.title}
+                                </a>
+                            </div>
+                            ${months.map((m, idx) => {
+                                if (idx === monthIndex) {
+                                    const dayOfMonth = targetDate.getDate();
+                                    const daysInMonth = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0).getDate();
+                                    const position = (dayOfMonth / daysInMonth) * 100;
+
+                                    return `
+                                        <div style="position: relative; border-left: 1px solid #21262d; padding: 4px;">
+                                            <div style="position: absolute; left: ${position}%; transform: translateX(-50%); width: 8px; height: 8px; background: ${progress === 100 ? '#3fb950' : progress > 0 ? '#d29922' : '#8b949e'}; border-radius: 50%; border: 2px solid #0d1117;" title="${project.title} (${project.targetDate})\n진행률: ${progress}%"></div>
+                                            ${project.epics && project.epics.length > 0 ? `
+                                                <div style="position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 20px; background: linear-gradient(90deg, transparent, ${progress === 100 ? '#3fb95033' : progress > 0 ? '#d2992233' : '#8b949e33'} ${position}%, transparent); border-radius: 4px;"></div>
+                                            ` : ''}
+                                        </div>
+                                    `;
+                                } else {
+                                    return `<div style="border-left: 1px solid #21262d;"></div>`;
+                                }
+                            }).join('')}
+                        </div>
+                    `;
                 });
 
                 html += '</div>';
             });
 
-            // 목표일 없는 프로젝트들 (맨 마지막에 표시)
+            // 목표일 없는 프로젝트
+            const noDateProjects = projects.filter(p => !p.targetDate);
             if (noDateProjects.length > 0) {
                 html += `
-                    <div class="month-section">
-                        <div class="month-header">목표일 미정</div>
+                    <div class="timeline-group" style="margin-top: 30px;">
+                        <div style="font-weight: 600; color: #8b949e; margin-bottom: 10px; padding: 8px; background: #161b22; border-radius: 6px;">
+                            목표일 미정 <span style="margin-left: 10px; font-size: 0.9em;">${noDateProjects.length}개</span>
+                        </div>
+                        ${noDateProjects.map(p => `
+                            <div style="padding: 8px; color: #8b949e;">
+                                <a href="${p.url}" target="_blank" style="color: #8b949e; text-decoration: none;">
+                                    ${p.title}
+                                </a>
+                            </div>
+                        `).join('')}
+                    </div>
                 `;
-
-                noDateProjects.forEach(project => {
-                    html += renderProject(project);
-                });
-
-                html += '</div>';
             }
 
             html += '</div>';
-
             document.getElementById('content').innerHTML = html;
         }
 

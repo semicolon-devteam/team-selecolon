@@ -206,6 +206,31 @@
             margin-left: 8px;
         }
 
+        .gantt-timeline {
+            overflow-x: auto;
+            padding: 20px;
+            background: #0d1117;
+            border-radius: 8px;
+        }
+
+        .timeline-header {
+            border-bottom: 2px solid #30363d;
+        }
+
+        .timeline-row {
+            transition: background-color 0.2s ease;
+            min-height: 40px;
+            align-items: center;
+        }
+
+        .timeline-row:hover {
+            background: #161b2244;
+        }
+
+        .timeline-group {
+            margin-bottom: 20px;
+        }
+
         .loading {
             text-align: center;
             padding: 60px 20px;
