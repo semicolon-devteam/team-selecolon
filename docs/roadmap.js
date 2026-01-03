@@ -151,14 +151,26 @@
             // 이번주 스프린트의 Task(Epic) 목록
             const weeklyTasks = currentSprint.epics;
 
-            // Epic 번호 → 사업 프로젝트 매핑 구축
+            // Epic 번호 → 사업 프로젝트 매핑 구축 (body 파싱 기반)
             const epicToBusinessMap = new Map();
             projectsData.forEach(project => {
-                if (!project.epics) return;
-                project.epics.forEach(epic => {
-                    epicToBusinessMap.set(epic.number, {
+                // body에서 Epic 번호 파싱
+                const epicNumbers = parseEpicNumbers(project.body || '');
+
+                epicNumbers.forEach(epicNum => {
+                    // 실제 Epic 데이터가 있으면 사용, 없으면 기본 정보만
+                    const epicData = project.epics?.find(e => e.number === epicNum);
+
+                    epicToBusinessMap.set(epicNum, {
                         businessProject: project,
-                        epic: epic
+                        epic: epicData || {
+                            number: epicNum,
+                            title: `Epic #${epicNum}`,
+                            url: `https://github.com/semicolon-devteam/command-center/issues/${epicNum}`,
+                            state: 'UNKNOWN',
+                            tasks: [],
+                            subIssues: []
+                        }
                     });
                 });
             });
@@ -220,14 +232,26 @@
                 };
             }
 
-            // Epic 번호 → 사업 프로젝트 매핑 구축
+            // Epic 번호 → 사업 프로젝트 매핑 구축 (body 파싱 기반)
             const epicToBusinessMap = new Map();
             projectsData.forEach(project => {
-                if (!project.epics) return;
-                project.epics.forEach(epic => {
-                    epicToBusinessMap.set(epic.number, {
+                // body에서 Epic 번호 파싱
+                const epicNumbers = parseEpicNumbers(project.body || '');
+
+                epicNumbers.forEach(epicNum => {
+                    // 실제 Epic 데이터가 있으면 사용, 없으면 기본 정보만
+                    const epicData = project.epics?.find(e => e.number === epicNum);
+
+                    epicToBusinessMap.set(epicNum, {
                         businessProject: project,
-                        epic: epic
+                        epic: epicData || {
+                            number: epicNum,
+                            title: `Epic #${epicNum}`,
+                            url: `https://github.com/semicolon-devteam/command-center/issues/${epicNum}`,
+                            state: 'UNKNOWN',
+                            tasks: [],
+                            subIssues: []
+                        }
                     });
                 });
             });
