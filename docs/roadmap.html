@@ -1122,13 +1122,14 @@
                     const isSubIssue = /^#\d+/.test(fullText);
 
                     if (!isSubIssue) {
-                        // Task만 카운트
+                        // Task만 카운트하고 매칭 확인
                         if (currentIndex === taskIndex) {
                             updated = true;
+                            currentIndex++; // 반드시 증가시켜서 다음 항목이 매칭되지 않도록
                             const newChecked = newCheckedState ? 'x' : ' ';
                             return `- [${newChecked}] ${title}${note ? `(${note})` : ''}`;
                         }
-                        currentIndex++;
+                        currentIndex++; // 매칭 안 되어도 증가
                     }
 
                     return match;
