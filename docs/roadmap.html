@@ -94,6 +94,88 @@
             background: #2ea043;
         }
 
+        .view-tab {
+            padding: 10px 20px;
+            border-radius: 6px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #8b949e;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .view-tab:hover {
+            background: #30363d;
+            border-color: #58a6ff;
+            color: #c9d1d9;
+        }
+
+        .view-tab.active {
+            background: #1f6feb;
+            border-color: #1f6feb;
+            color: white;
+            font-weight: 600;
+        }
+
+        .quarter-section {
+            background: #161b22;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid #1f6feb;
+        }
+
+        .quarter-header {
+            font-size: 1.5em;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: #58a6ff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .week-section {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 3px solid #238636;
+        }
+
+        .week-header {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #7ee787;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .week-section.current-week {
+            background: #0d2818;
+            border-left-color: #58a6ff;
+        }
+
+        .week-section.current-week .week-header {
+            color: #58a6ff;
+        }
+
+        .activity-item {
+            padding: 10px;
+            background: #161b22;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            border-left: 2px solid #30363d;
+        }
+
+        .activity-time {
+            font-size: 0.85em;
+            color: #8b949e;
+            margin-left: 8px;
+        }
+
         .loading {
             text-align: center;
             padding: 60px 20px;
@@ -399,25 +481,24 @@
             <p class="subtitle">사업 프로젝트 → Epic → Task 계층 구조 타임라인</p>
         </header>
 
-        <div class="controls">
-            <div class="control-group">
-                <label for="viewType">보기:</label>
-                <select id="viewType">
-                    <option value="timeline">타임라인</option>
-                    <option value="hierarchy">계층 구조</option>
-                    <option value="status">상태별</option>
-                </select>
+        <div class="view-switcher" style="background: #161b22; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+            <div class="view-tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                <button class="view-tab active" onclick="switchView('timeline')" data-view="timeline">📅 타임라인</button>
+                <button class="view-tab" onclick="switchView('year')" data-view="year">📊 연간 로드맵</button>
+                <button class="view-tab" onclick="switchView('month')" data-view="month">📆 월간 활동</button>
             </div>
-            <div class="control-group">
-                <label for="filterStatus">필터:</label>
-                <select id="filterStatus">
-                    <option value="all">전체</option>
-                    <option value="active">진행중</option>
-                    <option value="completed">완료</option>
-                    <option value="pending">대기</option>
-                </select>
+            <div class="controls" style="background: transparent; padding: 0; margin: 0;">
+                <div class="control-group">
+                    <label for="filterStatus">필터:</label>
+                    <select id="filterStatus" onchange="renderCurrentView()">
+                        <option value="all">전체</option>
+                        <option value="active">진행중</option>
+                        <option value="completed">완료</option>
+                        <option value="pending">대기</option>
+                    </select>
+                </div>
+                <button class="refresh" onclick="loadProjects()">🔄 새로고침</button>
             </div>
-            <button class="refresh" onclick="loadProjects()">🔄 새로고침</button>
         </div>
 
         <div class="stats" id="stats">
@@ -451,6 +532,7 @@
         let projectsData = [];
         let epicsData = [];
         let expandedProjects = new Set(); // 열린 프로젝트 추적
+        let currentView = 'timeline'; // 현재 뷰 타입
 
         // GitHub API 호출 함수
         async function fetchGraphQL(query) {
@@ -491,6 +573,9 @@
                                             url
                                             body
                                             state
+                                            createdAt
+                                            updatedAt
+                                            closedAt
                                             labels(first: 10) {
                                                 nodes {
                                                     name
@@ -557,6 +642,9 @@
                         url
                         body
                         state
+                        createdAt
+                        updatedAt
+                        closedAt
                     }
                 }
             `).join('\n');
@@ -725,6 +813,9 @@
                                 title: epic.title,
                                 url: epic.url,
                                 state: epic.state,
+                                createdAt: epic.createdAt,
+                                updatedAt: epic.updatedAt,
+                                closedAt: epic.closedAt,
                                 tasks: parsed.tasks,
                                 subIssues: subIssuesData
                             };
@@ -737,6 +828,9 @@
                         url: content.url,
                         body: content.body,
                         state: content.state,
+                        createdAt: content.createdAt,
+                        updatedAt: content.updatedAt,
+                        closedAt: content.closedAt,
                         status: getFieldValue(item, '상태') || getFieldValue(item, 'Status'),
                         category: getFieldValue(item, '카테고리'),
                         targetDate: getFieldValue(item, '목표일'),
@@ -752,8 +846,8 @@
                 // 통계 계산
                 renderStats(projectsData);
 
-                // 타임라인 렌더링
-                renderTimeline(projectsData);
+                // 현재 뷰 렌더링
+                renderCurrentView();
 
                 // 마지막 업데이트 시간
                 document.getElementById('lastUpdate').textContent = new Date().toLocaleString('ko-KR');
@@ -794,6 +888,55 @@
                     <div class="stat-label">총 예산</div>
                 </div>
             `;
+        }
+
+        // View 전환
+        function switchView(viewType) {
+            currentView = viewType;
+
+            // 탭 active 상태 업데이트
+            document.querySelectorAll('.view-tab').forEach(tab => {
+                tab.classList.remove('active');
+                if (tab.getAttribute('data-view') === viewType) {
+                    tab.classList.add('active');
+                }
+            });
+
+            renderCurrentView();
+        }
+
+        // 현재 뷰 렌더링
+        function renderCurrentView() {
+            const filterStatus = document.getElementById('filterStatus').value;
+            let filteredProjects = filterProjects(projectsData, filterStatus);
+
+            switch (currentView) {
+                case 'timeline':
+                    renderTimeline(filteredProjects);
+                    break;
+                case 'year':
+                    renderYearView(filteredProjects);
+                    break;
+                case 'month':
+                    renderMonthView(filteredProjects);
+                    break;
+            }
+        }
+
+        // 프로젝트 필터링
+        function filterProjects(projects, filterStatus) {
+            if (filterStatus === 'all') return projects;
+
+            return projects.filter(p => {
+                if (filterStatus === 'active') {
+                    return p.status?.includes('진행') || p.status?.includes('작업');
+                } else if (filterStatus === 'completed') {
+                    return p.status?.includes('완료') || p.status === '✅ 완료';
+                } else if (filterStatus === 'pending') {
+                    return p.status?.includes('대기') || p.status?.includes('승인') || p.status?.includes('계획');
+                }
+                return true;
+            });
         }
 
         // 타임라인 렌더링
@@ -1080,6 +1223,217 @@
         function resetToken() {
             localStorage.removeItem('github_token');
             location.reload();
+        }
+
+        // Year View 렌더링 (분기별)
+        function renderYearView(projects) {
+            const year = new Date().getFullYear();
+            const quarters = [
+                { name: 'Q1', months: [1, 2, 3], label: '1-3월' },
+                { name: 'Q2', months: [4, 5, 6], label: '4-6월' },
+                { name: 'Q3', months: [7, 8, 9], label: '7-9월' },
+                { name: 'Q4', months: [10, 11, 12], label: '10-12월' }
+            ];
+
+            let html = `<div class="year-view"><h2 style="margin-bottom: 20px; color: #58a6ff;">${year}년 로드맵 - 분기별 현황</h2>`;
+
+            quarters.forEach(quarter => {
+                const quarterProjects = projects.filter(p => {
+                    if (!p.targetDate && !p.updatedAt) return false;
+
+                    const checkDate = p.targetDate || p.updatedAt;
+                    const date = new Date(checkDate);
+                    return date.getFullYear() === year && quarter.months.includes(date.getMonth() + 1);
+                });
+
+                if (quarterProjects.length === 0) return;
+
+                // 진행률별 정렬
+                const sorted = quarterProjects.sort((a, b) => {
+                    const progressA = calculateProjectProgress(a);
+                    const progressB = calculateProjectProgress(b);
+                    return progressB - progressA;
+                });
+
+                html += `
+                    <div class="quarter-section">
+                        <div class="quarter-header">
+                            <span>${quarter.name} (${quarter.label})</span>
+                            <span style="font-size: 0.7em; color: #8b949e;">진행 ${sorted.length}개</span>
+                        </div>
+                `;
+
+                sorted.forEach(p => {
+                    const progress = calculateProjectProgress(p);
+                    const statusIcon = progress === 100 ? '🔵' : progress > 0 ? '🟢' : '⚪';
+                    const isDelayed = p.targetDate && new Date(p.targetDate) < new Date() && progress < 100;
+
+                    html += `
+                        <div class="activity-item" style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span>${isDelayed ? '🔴' : statusIcon}</span>
+                                <a href="${p.url}" target="_blank" style="color: #58a6ff; text-decoration: none; margin-left: 8px;">
+                                    ${p.title}
+                                </a>
+                                ${p.epics && p.epics.length > 0 ? `<span style="color: #8b949e; font-size: 0.9em; margin-left: 10px;">(Epic ${p.epics.length}개)</span>` : ''}
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 15px;">
+                                <div style="width: 200px; background: #21262d; height: 8px; border-radius: 4px; overflow: hidden;">
+                                    <div style="width: ${progress}%; background: ${progress === 100 ? '#238636' : '#1f6feb'}; height: 100%;"></div>
+                                </div>
+                                <span style="min-width: 50px; text-align: right; color: ${progress === 100 ? '#7ee787' : '#58a6ff'}; font-weight: 600;">${progress}%</span>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += '</div>';
+            });
+
+            html += '</div>';
+            document.getElementById('content').innerHTML = html;
+        }
+
+        // Month View 렌더링 (주간 활동)
+        function renderMonthView(projects) {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth();
+
+            // 현재 월의 주차 계산
+            const weeks = [];
+            const firstDay = new Date(year, month, 1);
+            const lastDay = new Date(year, month + 1, 0);
+
+            let weekStart = new Date(firstDay);
+            while (weekStart <= lastDay) {
+                const weekEnd = new Date(weekStart);
+                weekEnd.setDate(weekEnd.getDate() + 6);
+                if (weekEnd > lastDay) weekEnd.setTime(lastDay.getTime());
+
+                weeks.push({
+                    start: new Date(weekStart),
+                    end: new Date(weekEnd)
+                });
+
+                weekStart.setDate(weekStart.getDate() + 7);
+            }
+
+            const currentWeek = weeks.findIndex(w => now >= w.start && now <= w.end);
+
+            let html = `<div class="month-view"><h2 style="margin-bottom: 20px; color: #58a6ff;">${year}년 ${month + 1}월 - 주간 활동 현황</h2>`;
+
+            weeks.forEach((week, weekIndex) => {
+                const isCurrent = weekIndex === currentWeek;
+
+                // 해당 주에 업데이트된 Epic 찾기
+                const weekActivities = [];
+                projects.forEach(p => {
+                    if (!p.epics) return;
+
+                    p.epics.forEach(epic => {
+                        if (!epic.updatedAt) return;
+
+                        const epicDate = new Date(epic.updatedAt);
+                        if (epicDate >= week.start && epicDate <= week.end) {
+                            weekActivities.push({
+                                project: p,
+                                epic: epic,
+                                updatedAt: epic.updatedAt
+                            });
+                        }
+                    });
+                });
+
+                if (weekActivities.length === 0 && !isCurrent) return;
+
+                const weekClass = isCurrent ? 'week-section current-week' : 'week-section';
+                html += `
+                    <div class="${weekClass}">
+                        <div class="week-header">
+                            <span>Week ${weekIndex + 1} (${week.start.getMonth() + 1}/${week.start.getDate()} - ${week.end.getMonth() + 1}/${week.end.getDate()})
+                                ${isCurrent ? '<span style="background: #1f6feb; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">이번 주</span>' : ''}
+                            </span>
+                            <span style="font-size: 0.8em; color: #8b949e;">활동 ${weekActivities.length}건</span>
+                        </div>
+                `;
+
+                if (weekActivities.length > 0) {
+                    weekActivities.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+                    weekActivities.forEach(activity => {
+                        const progress = calculateEpicProgress(activity.epic);
+                        const updateDate = new Date(activity.updatedAt);
+
+                        html += `
+                            <div class="activity-item">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <a href="${activity.project.url}" target="_blank" style="color: #c9d1d9; text-decoration: none; font-weight: 600;">
+                                            ${activity.project.title}
+                                        </a>
+                                        <span style="color: #8b949e; margin: 0 8px;">›</span>
+                                        <a href="${activity.epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none;">
+                                            Epic #${activity.epic.number}: ${activity.epic.title}
+                                        </a>
+                                    </div>
+                                    <span class="activity-time">${updateDate.getMonth() + 1}/${updateDate.getDate()} ${updateDate.getHours()}:${String(updateDate.getMinutes()).padStart(2, '0')}</span>
+                                </div>
+                                <div style="margin-top: 8px; font-size: 0.9em; color: #8b949e;">
+                                    진행률: ${progress}%
+                                    ${activity.epic.tasks && activity.epic.tasks.length > 0 ? `• ${activity.epic.tasks.filter(t => t.completed).length}/${activity.epic.tasks.length} Tasks` : ''}
+                                    ${activity.epic.subIssues && activity.epic.subIssues.length > 0 ? `• ${activity.epic.subIssues.filter(si => si.state === 'CLOSED').length}/${activity.epic.subIssues.length} Sub-Issues` : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+                } else {
+                    html += '<p style="color: #8b949e; font-size: 0.9em; margin: 10px 0;">활동 내역이 없습니다.</p>';
+                }
+
+                html += '</div>';
+            });
+
+            html += '</div>';
+            document.getElementById('content').innerHTML = html;
+        }
+
+        // 프로젝트 진행률 계산
+        function calculateProjectProgress(project) {
+            if (!project.epics || project.epics.length === 0) return 0;
+
+            let totalTasks = 0;
+            let completedTasks = 0;
+
+            project.epics.forEach(epic => {
+                if (epic.tasks) {
+                    totalTasks += epic.tasks.length;
+                    completedTasks += epic.tasks.filter(t => t.completed).length;
+                }
+                if (epic.subIssues) {
+                    totalTasks += epic.subIssues.length;
+                    completedTasks += epic.subIssues.filter(si => si.state === 'CLOSED').length;
+                }
+            });
+
+            return totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+        }
+
+        // Epic 진행률 계산
+        function calculateEpicProgress(epic) {
+            let total = 0;
+            let completed = 0;
+
+            if (epic.tasks) {
+                total += epic.tasks.length;
+                completed += epic.tasks.filter(t => t.completed).length;
+            }
+            if (epic.subIssues) {
+                total += epic.subIssues.length;
+                completed += epic.subIssues.filter(si => si.state === 'CLOSED').length;
+            }
+
+            return total > 0 ? Math.round((completed / total) * 100) : 0;
         }
 
         // Task 체크박스 업데이트 (GitHub 이슈 수정)
