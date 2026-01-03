@@ -124,6 +124,22 @@
                         createdAt
                         updatedAt
                         closedAt
+                        projectItems(first: 5) {
+                            nodes {
+                                project {
+                                    title
+                                    number
+                                }
+                                fieldValueByName(name: "이터레이션") {
+                                    ... on ProjectV2ItemFieldIterationValue {
+                                        title
+                                        startDate
+                                        duration
+                                        iterationId
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             `).join('\n');
@@ -287,6 +303,12 @@
                                 });
                             }
 
+                            // Extract iteration from projectItems
+                            const iterationItem = epic.projectItems?.nodes?.find(item =>
+                                item.project?.number === 1 && item.fieldValueByName
+                            );
+                            const iteration = iterationItem?.fieldValueByName || null;
+
                             return {
                                 number: epic.number,
                                 title: epic.title,
@@ -295,6 +317,7 @@
                                 createdAt: epic.createdAt,
                                 updatedAt: epic.updatedAt,
                                 closedAt: epic.closedAt,
+                                iteration: iteration,
                                 tasks: parsed.tasks,
                                 subIssues: subIssuesData
                             };
@@ -398,6 +421,9 @@
                     break;
                 case 'month':
                     renderMonthView(filteredProjects);
+                    break;
+                case 'sprint':
+                    renderSprintView(filteredProjects);
                     break;
             }
         }
@@ -872,6 +898,182 @@
 
                 html += '</div>';
             });
+
+            html += '</div>';
+            document.getElementById('content').innerHTML = html;
+        }
+
+        // Sprint 뷰 렌더링 (이터레이션 기준)
+        function renderSprintView(projects) {
+            const now = new Date();
+
+            // Epic들을 iteration별로 그룹화
+            const sprintGroups = new Map();
+            const noSprintEpics = [];
+
+            projects.forEach(p => {
+                if (!p.epics) return;
+
+                p.epics.forEach(epic => {
+                    if (epic.iteration && epic.iteration.title) {
+                        const sprintKey = `${epic.iteration.title}|${epic.iteration.startDate}|${epic.iteration.duration}`;
+
+                        if (!sprintGroups.has(sprintKey)) {
+                            sprintGroups.set(sprintKey, {
+                                title: epic.iteration.title,
+                                startDate: epic.iteration.startDate,
+                                duration: epic.iteration.duration,
+                                iterationId: epic.iteration.iterationId,
+                                epics: []
+                            });
+                        }
+
+                        sprintGroups.get(sprintKey).epics.push({
+                            project: p,
+                            epic: epic
+                        });
+                    } else {
+                        noSprintEpics.push({
+                            project: p,
+                            epic: epic
+                        });
+                    }
+                });
+            });
+
+            // Sprint를 시작일 기준 정렬
+            const sortedSprints = Array.from(sprintGroups.values()).sort((a, b) => {
+                return new Date(b.startDate) - new Date(a.startDate);
+            });
+
+            let html = `<div class="sprint-view"><h2 style="margin-bottom: 20px; color: #58a6ff;">Sprint 기준 로드맵</h2>`;
+
+            // 현재 진행 중인 Sprint 찾기
+            const currentSprint = sortedSprints.find(sprint => {
+                const startDate = new Date(sprint.startDate);
+                const endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + sprint.duration);
+                return now >= startDate && now <= endDate;
+            });
+
+            // Sprint별로 렌더링
+            sortedSprints.forEach(sprint => {
+                const startDate = new Date(sprint.startDate);
+                const endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + sprint.duration);
+                const isCurrent = sprint === currentSprint;
+
+                const sprintClass = isCurrent ? 'sprint-section current-sprint' : 'sprint-section';
+
+                html += `
+                    <div class="${sprintClass}">
+                        <div class="sprint-header">
+                            <div>
+                                <span style="font-weight: 600; font-size: 1.1em;">${sprint.title}</span>
+                                ${isCurrent ? '<span style="background: #1f6feb; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; margin-left: 10px;">현재 Sprint</span>' : ''}
+                            </div>
+                            <span style="font-size: 0.9em; color: #8b949e;">
+                                ${startDate.getMonth() + 1}/${startDate.getDate()} - ${endDate.getMonth() + 1}/${endDate.getDate()}
+                                (${sprint.duration}일) • ${sprint.epics.length}개 Epic
+                            </span>
+                        </div>
+                `;
+
+                // Sprint 내 Epic들 렌더링
+                sprint.epics.forEach(({ project, epic }) => {
+                    const progress = calculateEpicProgress(epic);
+                    const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
+
+                    html += `
+                        <div class="epic-item" style="margin: 12px 0; padding: 12px; background: #0d1117; border-radius: 6px; border-left: 3px solid ${stateColor};">
+                            <div style="display: flex; justify-content: space-between; align-items: start;">
+                                <div style="flex: 1;">
+                                    <div style="margin-bottom: 8px;">
+                                        <a href="${project.url}" target="_blank" style="color: #8b949e; text-decoration: none; font-size: 0.9em;">
+                                            ${project.title}
+                                        </a>
+                                    </div>
+                                    <div>
+                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600;">
+                                            Epic #${epic.number}: ${epic.title}
+                                        </a>
+                                        <span style="margin-left: 8px; padding: 2px 6px; background: ${stateColor}; border-radius: 12px; font-size: 0.75em; color: #0d1117;">
+                                            ${epic.state}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div style="text-align: right; min-width: 80px;">
+                                    <div style="font-size: 1.2em; font-weight: 600; color: #58a6ff;">${progress}%</div>
+                                    <div style="font-size: 0.8em; color: #8b949e;">진행률</div>
+                                </div>
+                            </div>
+
+                            ${epic.tasks && epic.tasks.length > 0 ? `
+                                <div style="margin-top: 12px; font-size: 0.9em;">
+                                    <div style="color: #8b949e; margin-bottom: 4px;">
+                                        Tasks: ${epic.tasks.filter(t => t.completed).length}/${epic.tasks.length}
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: ${progress}%;"></div>
+                                    </div>
+                                </div>
+                            ` : ''}
+
+                            ${epic.subIssues && epic.subIssues.length > 0 ? `
+                                <div style="margin-top: 8px; font-size: 0.85em; color: #8b949e;">
+                                    Sub-Issues: ${epic.subIssues.filter(si => si.state === 'CLOSED').length}/${epic.subIssues.length} 완료
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                });
+
+                html += '</div>';
+            });
+
+            // Sprint 미할당 Epic들
+            if (noSprintEpics.length > 0) {
+                html += `
+                    <div class="sprint-section" style="border-left-color: #8b949e;">
+                        <div class="sprint-header">
+                            <span style="font-weight: 600; font-size: 1.1em; color: #8b949e;">Sprint 미할당</span>
+                            <span style="font-size: 0.9em; color: #8b949e;">${noSprintEpics.length}개 Epic</span>
+                        </div>
+                `;
+
+                noSprintEpics.forEach(({ project, epic }) => {
+                    const progress = calculateEpicProgress(epic);
+                    const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
+
+                    html += `
+                        <div class="epic-item" style="margin: 12px 0; padding: 12px; background: #0d1117; border-radius: 6px; border-left: 3px solid ${stateColor};">
+                            <div style="display: flex; justify-content: space-between; align-items: start;">
+                                <div style="flex: 1;">
+                                    <div style="margin-bottom: 8px;">
+                                        <a href="${project.url}" target="_blank" style="color: #8b949e; text-decoration: none; font-size: 0.9em;">
+                                            ${project.title}
+                                        </a>
+                                    </div>
+                                    <div>
+                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600;">
+                                            Epic #${epic.number}: ${epic.title}
+                                        </a>
+                                        <span style="margin-left: 8px; padding: 2px 6px; background: ${stateColor}; border-radius: 12px; font-size: 0.75em; color: #0d1117;">
+                                            ${epic.state}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div style="text-align: right; min-width: 80px;">
+                                    <div style="font-size: 1.2em; font-weight: 600; color: #58a6ff;">${progress}%</div>
+                                    <div style="font-size: 0.8em; color: #8b949e;">진행률</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += '</div>';
+            }
 
             html += '</div>';
             document.getElementById('content').innerHTML = html;
