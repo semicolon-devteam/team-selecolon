@@ -694,8 +694,93 @@
             });
         }
 
-        // 타임라인 렌더링 (월별 프로젝트 카드 뷰)
+        // 타임라인 렌더링 (Gantt 차트 + Epic 상세 카드)
         function renderTimeline(projects) {
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth();
+
+            // 6개월 타임라인 생성
+            const months = [];
+            for (let i = 0; i < 6; i++) {
+                const monthDate = new Date(currentYear, currentMonth - 1 + i, 1);
+                months.push({
+                    date: monthDate,
+                    year: monthDate.getFullYear(),
+                    month: monthDate.getMonth(),
+                    label: `${monthDate.getFullYear()}년 ${monthDate.getMonth() + 1}월`
+                });
+            }
+
+            // 목표일이 있는 프로젝트만 필터링
+            const projectsWithDate = projects.filter(p => p.targetDate);
+
+            let html = `
+                <div class="gantt-timeline">
+                    <h2 style="margin-bottom: 20px; color: #58a6ff;">📅 로드맵 타임라인 (Gantt)</h2>
+
+                    <!-- 타임라인 헤더 -->
+                    <div class="timeline-header" style="display: grid; grid-template-columns: 250px repeat(${months.length}, 1fr); gap: 0; margin-bottom: 10px; position: sticky; top: 0; background: #0d1117; z-index: 10; padding: 10px 0; border-bottom: 2px solid #30363d;">
+                        <div style="font-weight: 600; color: #8b949e; padding: 10px;">프로젝트</div>
+                        ${months.map((m, idx) => {
+                            const isCurrent = m.year === currentYear && m.month === currentMonth;
+                            return `
+                                <div style="text-align: center; padding: 10px; font-weight: 600; color: ${isCurrent ? '#58a6ff' : '#8b949e'}; border-left: 1px solid #21262d;">
+                                    ${m.year.toString().slice(2)}.${(m.month + 1).toString().padStart(2, '0')}
+                                    ${isCurrent ? '<div style="font-size: 0.7em; color: #1f6feb;">▼ 현재</div>' : ''}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+            `;
+
+            projectsWithDate.forEach(project => {
+                const targetDate = new Date(project.targetDate);
+                const progress = calculateProjectProgress(project);
+
+                // 타임라인 바 위치 계산
+                const monthIndex = months.findIndex(m =>
+                    m.year === targetDate.getFullYear() && m.month === targetDate.getMonth()
+                );
+
+                const statusClass = getStatusClass(project.status);
+
+                html += `
+                    <div class="timeline-row" style="display: grid; grid-template-columns: 250px repeat(${months.length}, 1fr); gap: 0; border-bottom: 1px solid #21262d; padding: 8px 0;">
+                        <div style="padding: 8px; display: flex; align-items: center; gap: 8px;">
+                            <span class="project-status ${statusClass}" style="font-size: 0.75em; padding: 2px 8px;">${project.status || '상태없음'}</span>
+                            <a href="${project.url}" target="_blank" style="color: #c9d1d9; text-decoration: none; font-size: 0.9em;">
+                                ${project.title}
+                            </a>
+                        </div>
+                        ${months.map((m, idx) => {
+                            if (idx === monthIndex) {
+                                const dayOfMonth = targetDate.getDate();
+                                const daysInMonth = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0).getDate();
+                                const position = (dayOfMonth / daysInMonth) * 100;
+
+                                return `
+                                    <div style="position: relative; border-left: 1px solid #21262d; padding: 4px;">
+                                        <div style="position: absolute; left: ${position}%; transform: translateX(-50%); width: 10px; height: 10px; background: ${progress === 100 ? '#3fb950' : progress > 0 ? '#d29922' : '#8b949e'}; border-radius: 50%; border: 2px solid #0d1117; z-index: 2;" title="${project.title} (${project.targetDate})\n진행률: ${progress}%"></div>
+                                        ${project.epics && project.epics.length > 0 ? `
+                                            <div style="position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 24px; background: linear-gradient(90deg, transparent, ${progress === 100 ? '#3fb95044' : progress > 0 ? '#d2992244' : '#8b949e44'} ${position}%, transparent); border-radius: 4px;"></div>
+                                        ` : ''}
+                                    </div>
+                                `;
+                            } else {
+                                return `<div style="border-left: 1px solid #21262d;"></div>`;
+                            }
+                        }).join('')}
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+
+            // Epic 상세 정보 추가 (월별 카드 뷰)
+            html += '<div style="margin-top: 50px; padding-top: 30px; border-top: 3px solid #30363d;">';
+            html += '<h2 style="margin-bottom: 20px; color: #58a6ff;">📋 프로젝트 상세 (Epic 포함)</h2>';
+
             // 목표일 기준 그룹핑
             const grouped = {};
             const noDateProjects = [];
@@ -717,8 +802,6 @@
 
             // 날짜 역순 정렬 (최신이 먼저)
             const sortedMonths = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
-
-            let html = '<div class="timeline">';
 
             sortedMonths.forEach(monthKey => {
                 const [year, month] = monthKey.split('-');
@@ -1221,15 +1304,55 @@
                     </div>
             `;
 
+            // 먼저 모든 이터레이션 Epic 표시 (매핑 안 된 것도 포함)
+            if (sprint.epics && sprint.epics.length > 0) {
+                // 매핑된 Epic 번호 수집
+                const mappedEpicNumbers = new Set();
+                weeklyData.businessProjects.forEach(({ weeklyEpics }) => {
+                    weeklyEpics.forEach(epic => mappedEpicNumbers.add(epic.number));
+                });
+
+                // 매핑 안 된 Epic들 표시
+                const unmappedEpics = sprint.epics.filter(e => !mappedEpicNumbers.has(e.number));
+                if (unmappedEpics.length > 0) {
+                    html += `
+                        <div style="background: #161b22; border-radius: 8px; padding: 20px; margin-bottom: 20px; border-left: 4px solid #8b949e;">
+                            <h3 style="margin: 0 0 15px 0; color: #8b949e;">
+                                미분류 Epic (${unmappedEpics.length}개)
+                            </h3>
+                            <div style="color: #8b949e; font-size: 0.9em; margin-bottom: 15px;">
+                                사업 프로젝트에 연결되지 않은 Epic들입니다
+                            </div>
+                    `;
+
+                    unmappedEpics.forEach(epic => {
+                        const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
+
+                        html += `
+                            <div class="epic-item" style="margin: 12px 0; padding: 15px; background: #0d1117; border-radius: 6px; border-left: 3px solid ${stateColor};">
+                                <div style="display: flex; justify-content: space-between; align-items: start;">
+                                    <div style="flex: 1;">
+                                        <a href="${epic.url}" target="_blank" style="color: #58a6ff; text-decoration: none; font-weight: 600; font-size: 1.05em;">
+                                            Epic #${epic.number}: ${epic.title}
+                                        </a>
+                                        <span style="margin-left: 8px; padding: 2px 8px; background: ${stateColor}; border-radius: 12px; font-size: 0.75em; color: #0d1117;">
+                                            ${epic.state}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div style="margin-top: 8px; color: #8b949e; font-size: 0.85em;">
+                                    이터레이션: ${epic.iterationTitle || sprint.title}
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    html += '</div>';
+                }
+            }
+
             // 사업 프로젝트별로 렌더링 (Bottom-Up 역산 결과)
-            if (weeklyData.businessProjects.length === 0) {
-                html += `
-                    <div style="text-align: center; padding: 40px 20px; color: #8b949e;">
-                        <p style="font-size: 1.1em;">이번주 스프린트에 할당된 Epic이 사업 프로젝트와 연결되지 않았습니다</p>
-                        <p style="font-size: 0.9em; margin-top: 10px;">Epic을 사업 이슈에 연결하면 여기에 표시됩니다</p>
-                    </div>
-                `;
-            } else {
+            if (weeklyData.businessProjects.length > 0) {
                 weeklyData.businessProjects.forEach(({ project, weeklyEpics }) => {
                     const projectProgress = calculateProjectProgress(project);
 
