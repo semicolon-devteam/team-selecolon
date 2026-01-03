@@ -1301,6 +1301,10 @@
                             이번주 할당된 Epic: ${sprint.epics.length}개
                             ${weeklyData.businessProjects.length > 0 ? `• 관련 사업: ${weeklyData.businessProjects.length}개` : ''}
                         </div>
+                        <details style="margin-top: 10px; font-size: 0.85em; color: #8b949e;">
+                            <summary style="cursor: pointer;">디버그: 할당된 Epic 목록</summary>
+                            <pre style="background: #0d1117; padding: 10px; border-radius: 4px; overflow: auto; margin-top: 8px;">${JSON.stringify(sprint.epics.map(e => ({num: e.number, title: e.title})), null, 2)}</pre>
+                        </details>
                     </div>
             `;
 
