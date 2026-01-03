@@ -10,6 +10,7 @@
         // 데이터 저장소
         let projectsData = [];
         let epicsData = [];
+        let iterationsData = []; // 이터레이션(스프린트) 목록
         let expandedProjects = new Set(); // 열린 프로젝트 추적
         let currentView = 'timeline'; // 현재 뷰 타입
 
@@ -34,6 +35,84 @@
             }
 
             return data.data;
+        }
+
+        // 이슈관리 프로젝트의 이터레이션(스프린트) 목록 가져오기
+        async function fetchIterations() {
+            const query = `
+                query {
+                    organization(login: "semicolon-devteam") {
+                        projectV2(number: 1) {
+                            title
+                            field(name: "이터레이션") {
+                                ... on ProjectV2IterationField {
+                                    id
+                                    name
+                                    configuration {
+                                        iterations {
+                                            id
+                                            title
+                                            startDate
+                                            duration
+                                        }
+                                    }
+                                }
+                            }
+                            items(first: 100) {
+                                nodes {
+                                    id
+                                    content {
+                                        ... on Issue {
+                                            number
+                                            repository {
+                                                name
+                                            }
+                                        }
+                                    }
+                                    fieldValueByName(name: "이터레이션") {
+                                        ... on ProjectV2ItemFieldIterationValue {
+                                            title
+                                            startDate
+                                            duration
+                                            iterationId
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const data = await fetchGraphQL(query);
+            const project = data.organization.projectV2;
+
+            // 이터레이션 설정 정보
+            const iterations = project.field?.configuration?.iterations || [];
+
+            // 각 이터레이션에 속한 이슈 매핑
+            const iterationMap = new Map();
+            iterations.forEach(iter => {
+                iterationMap.set(iter.id, {
+                    ...iter,
+                    epics: []
+                });
+            });
+
+            // 이슈들을 이터레이션에 할당
+            project.items.nodes.forEach(item => {
+                if (item.content?.repository?.name === 'command-center' && item.fieldValueByName?.iterationId) {
+                    const iterationId = item.fieldValueByName.iterationId;
+                    if (iterationMap.has(iterationId)) {
+                        iterationMap.get(iterationId).epics.push({
+                            number: item.content.number,
+                            iterationTitle: item.fieldValueByName.title
+                        });
+                    }
+                }
+            });
+
+            return Array.from(iterationMap.values());
         }
 
         // 사업관리 프로젝트 데이터 가져오기
@@ -262,6 +341,10 @@
             try {
                 contentDiv.innerHTML = '<div class="loading">데이터를 불러오는 중입니다...</div>';
 
+                // 이터레이션(스프린트) 목록 먼저 로드
+                contentDiv.innerHTML = '<div class="loading">스프린트 정보 로드 중...</div>';
+                iterationsData = await fetchIterations();
+
                 const items = await fetchBusinessProjects();
 
                 // 데이터 파싱
@@ -303,12 +386,6 @@
                                 });
                             }
 
-                            // Extract iteration from projectItems
-                            const iterationItem = epic.projectItems?.nodes?.find(item =>
-                                item.project?.number === 1 && item.fieldValueByName
-                            );
-                            const iteration = iterationItem?.fieldValueByName || null;
-
                             return {
                                 number: epic.number,
                                 title: epic.title,
@@ -317,7 +394,6 @@
                                 createdAt: epic.createdAt,
                                 updatedAt: epic.updatedAt,
                                 closedAt: epic.closedAt,
-                                iteration: iteration,
                                 tasks: parsed.tasks,
                                 subIssues: subIssuesData
                             };
@@ -903,47 +979,50 @@
             document.getElementById('content').innerHTML = html;
         }
 
-        // Sprint 뷰 렌더링 (이터레이션 기준)
+        // Sprint 뷰 렌더링 (이터레이션 기준 - 역산 방식)
         function renderSprintView(projects) {
             const now = new Date();
 
-            // Epic들을 iteration별로 그룹화
-            const sprintGroups = new Map();
-            const noSprintEpics = [];
-
+            // 모든 Epic을 번호로 검색할 수 있도록 맵 생성
+            const epicMap = new Map();
             projects.forEach(p => {
                 if (!p.epics) return;
-
                 p.epics.forEach(epic => {
-                    if (epic.iteration && epic.iteration.title) {
-                        const sprintKey = `${epic.iteration.title}|${epic.iteration.startDate}|${epic.iteration.duration}`;
-
-                        if (!sprintGroups.has(sprintKey)) {
-                            sprintGroups.set(sprintKey, {
-                                title: epic.iteration.title,
-                                startDate: epic.iteration.startDate,
-                                duration: epic.iteration.duration,
-                                iterationId: epic.iteration.iterationId,
-                                epics: []
-                            });
-                        }
-
-                        sprintGroups.get(sprintKey).epics.push({
-                            project: p,
-                            epic: epic
-                        });
-                    } else {
-                        noSprintEpics.push({
-                            project: p,
-                            epic: epic
-                        });
-                    }
+                    epicMap.set(epic.number, { project: p, epic: epic });
                 });
             });
 
-            // Sprint를 시작일 기준 정렬
-            const sortedSprints = Array.from(sprintGroups.values()).sort((a, b) => {
-                return new Date(b.startDate) - new Date(a.startDate);
+            // iterationsData를 기반으로 스프린트별 Epic 매핑
+            const sortedSprints = iterationsData
+                .map(iteration => {
+                    const sprintEpics = [];
+
+                    // 이 스프린트에 할당된 Epic 번호들로 실제 Epic 데이터 찾기
+                    iteration.epics.forEach(epicRef => {
+                        const epicData = epicMap.get(epicRef.number);
+                        if (epicData) {
+                            sprintEpics.push(epicData);
+                        }
+                    });
+
+                    return {
+                        ...iteration,
+                        assignedEpics: sprintEpics
+                    };
+                })
+                .sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+
+            // 스프린트에 할당되지 않은 Epic 찾기
+            const assignedEpicNumbers = new Set();
+            iterationsData.forEach(iter => {
+                iter.epics.forEach(epicRef => assignedEpicNumbers.add(epicRef.number));
+            });
+
+            const noSprintEpics = [];
+            epicMap.forEach(({ project, epic }) => {
+                if (!assignedEpicNumbers.has(epic.number)) {
+                    noSprintEpics.push({ project, epic });
+                }
             });
 
             let html = `<div class="sprint-view"><h2 style="margin-bottom: 20px; color: #58a6ff;">Sprint 기준 로드맵</h2>`;
@@ -974,13 +1053,13 @@
                             </div>
                             <span style="font-size: 0.9em; color: #8b949e;">
                                 ${startDate.getMonth() + 1}/${startDate.getDate()} - ${endDate.getMonth() + 1}/${endDate.getDate()}
-                                (${sprint.duration}일) • ${sprint.epics.length}개 Epic
+                                (${sprint.duration}일) • ${sprint.assignedEpics.length}개 Epic
                             </span>
                         </div>
                 `;
 
                 // Sprint 내 Epic들 렌더링
-                sprint.epics.forEach(({ project, epic }) => {
+                sprint.assignedEpics.forEach(({ project, epic }) => {
                     const progress = calculateEpicProgress(epic);
                     const stateColor = epic.state === 'OPEN' ? '#3fb950' : epic.state === 'CLOSED' ? '#8b949e' : '#d29922';
 
